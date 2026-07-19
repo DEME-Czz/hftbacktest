@@ -3,7 +3,7 @@ use std::{
     fs::read_to_string,
     panic,
     process::exit,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc::sync_channel},
     thread,
     time::Duration,
 };
@@ -115,14 +115,13 @@ fn run_receive_task(
 }
 
 async fn run_publish_task(
-    name: &str,
     order_manager: Arc<Mutex<dyn GetOrders>>,
     mut rx: UnboundedReceiver<PublishEvent>,
     shutdown_signal: Arc<Notify>,
+    bot_tx: hftbacktest::live::ipc::iceoryx::IceoryxSender<LiveEvent>,
 ) -> Result<(), ChannelError> {
     let mut depth = HashMap::new();
     let mut position: HashMap<String, Position> = HashMap::new();
-    let bot_tx = IceoryxBuilder::new(name).bot(false).sender()?;
 
     loop {
         select! {
@@ -416,11 +415,27 @@ async fn main() {
 
     let name = args.name.clone();
     let order_manager = connector.order_manager();
+    // iceoryx2 0.6.1 can fail when multiple nodes create its runtime directories
+    // concurrently. Wait until the publish thread has initialized its IPC resources
+    // before the receive task starts creating its own resources.
+    let (ipc_ready_tx, ipc_ready_rx) = sync_channel(0);
     let handle = thread::spawn(move || {
+        let bot_tx = IceoryxBuilder::new(&name)
+            .bot(false)
+            .sender()
+            .map_err(|error| {
+                error!(
+                    ?error,
+                    "An error occurred while creating the channel to the bots."
+                );
+            })
+            .unwrap();
+        ipc_ready_tx.send(()).unwrap();
+
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
 
         rt.block_on(async move {
-            run_publish_task(&name, order_manager, pub_rx, shutdown_signal)
+            run_publish_task(order_manager, pub_rx, shutdown_signal, bot_tx)
                 .await
                 .map_err(|error: ChannelError| {
                     error!(
@@ -432,6 +447,7 @@ async fn main() {
         });
     });
 
+    ipc_ready_rx.recv().unwrap();
     let name = args.name;
     run_receive_task(&name, pub_tx, &mut connector)
         .map_err(|error| {

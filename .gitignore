@@ -9,3 +9,6 @@ docs/_build
 **/target
 **/tmp_*
 **/*.so
+
+# Local exchange credentials; copy from the tracked .example template.
+connector/examples/binancefutures-demo.toml

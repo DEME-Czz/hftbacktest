@@ -13,10 +13,7 @@ use tokio::{
     },
     time,
 };
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Message, client::IntoClientRequest},
-};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, warn};
 
 use crate::{
@@ -28,6 +25,7 @@ use crate::{
         rest::BinanceFuturesClient,
     },
     connector::PublishEvent,
+    utils::connect_websocket,
 };
 
 pub struct UserDataStream {
@@ -113,8 +111,7 @@ impl UserDataStream {
     }
 
     pub async fn connect(&mut self, url: &str) -> Result<(), BinanceFuturesError> {
-        let request = url.into_client_request()?;
-        let (ws_stream, _) = connect_async(request).await?;
+        let (ws_stream, _) = connect_websocket(url).await?;
         let (mut write, mut read) = ws_stream.split();
         let mut interval = time::interval(Duration::from_secs(60 * 30));
         let mut ping_checker = time::interval(Duration::from_secs(10));

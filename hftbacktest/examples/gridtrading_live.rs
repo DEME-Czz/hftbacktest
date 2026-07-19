@@ -17,11 +17,11 @@ const ORDER_PREFIX: &str = "prefix";
 fn prepare_live() -> LiveBot<IceoryxUnifiedChannel, HashMapMarketDepth> {
     let mut hbt = LiveBotBuilder::new()
         .register(Instrument::new(
-            "binancefutures",
-            "1000SHIBUSDT",
-            0.000001,
+            "binancefutures-demo-v3",
+            "dogeusdt",
+            0.00001,
             1.0,
-            HashMapMarketDepth::new(0.000001, 1.0),
+            HashMapMarketDepth::new(0.00001, 1.0),
             0,
         ))
         .build()
@@ -38,9 +38,10 @@ fn main() {
     let relative_half_spread = 0.0005;
     let relative_grid_interval = 0.0005;
     let grid_num = 10;
-    let min_grid_step = 0.000001; // tick size
+    let min_grid_step = 0.00001; // DOGEUSDT tick size
     let skew = relative_half_spread / grid_num as f64;
-    let order_qty = 1.0;
+    // At the current demo price this stays above Binance's 5 USDT minimum notional.
+    let order_qty = 100.0;
     let max_position = grid_num as f64 * order_qty;
 
     let mut recorder = LoggingRecorder::new();

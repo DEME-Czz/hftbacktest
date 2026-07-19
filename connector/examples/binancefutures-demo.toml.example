@@ -1,0 +1,7 @@
+# Binance Futures Demo endpoints
+stream_url = "wss://demo-fstream.binance.com/ws"
+api_url = "https://demo-fapi.binance.com"
+
+order_prefix = "test"
+api_key = ""
+secret = ""

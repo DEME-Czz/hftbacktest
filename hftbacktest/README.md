@@ -19,7 +19,7 @@ feed data. You can also run the live bot using the same algo code.
 * Backtest accounting for both feed and order latency, using provided models or your own custom model.
 * Order fill simulation that takes into account the order queue position, using provided models or your own custom model.
 * Backtesting of multi-asset and multi-exchange models
-* Deployment of a live trading bot for quick prototyping and testing using the same algorithm code: currently for Binance Futures and Bybit.
+* Deployment of a live trading bot for quick prototyping and testing using the same algorithm code. The connector currently includes Binance Futures, Binance Spot, and Bybit implementations; live trading remains experimental.
 
 ## Getting started
 
@@ -40,9 +40,11 @@ part of [Data Preparation](https://hftbacktest.readthedocs.io/en/latest/tutorial
 
 ### Examples
 
-[high-frequency gridtrading](https://github.com/nkaz001/hftbacktest/blob/master/hftbacktest/examples/gridtrading.ipynb): The complete process of backtesting Binance Futures using a high-frequency grid trading strategy implemented in Rust.
+[high-frequency grid trading](https://github.com/nkaz001/hftbacktest/blob/master/hftbacktest/examples/gridtrading.ipynb): The complete process of backtesting Binance Futures using a high-frequency grid trading strategy implemented in Rust.
 
-Please see [examples](https://github.com/nkaz001/hftbacktest/tree/master/rust/examples).
+Please see the [Rust examples](https://github.com/nkaz001/hftbacktest/tree/master/hftbacktest/examples).
+
+For the live connector CLI, Binance Futures Demo startup commands, proxy configuration, account-state limitations, and shutdown behavior, see the [Connector README](../connector/README.md).
 
 ## Documentation
 
