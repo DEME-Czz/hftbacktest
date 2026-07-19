@@ -1,0 +1,14 @@
+[package]
+name = "hftbacktest-tui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1.0.100"
+chrono = "0.4.42"
+clap = { version = "4.5.53", features = ["derive"] }
+crossterm = "0.28.1"
+hftbacktest = { path = "../hftbacktest" }
+iceoryx2 = { version = "0.6.1", features = ["logger_tracing"] }
+ratatui = "0.29.0"
