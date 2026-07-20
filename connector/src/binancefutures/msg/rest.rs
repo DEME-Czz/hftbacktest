@@ -126,6 +126,9 @@ pub struct AccountAssetV3 {
     #[serde(rename = "walletBalance")]
     #[serde(deserialize_with = "from_str_to_f64")]
     pub wallet_balance: f64,
+    #[serde(rename = "availableBalance")]
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub available_balance: f64,
     #[serde(rename = "updateTime")]
     pub update_time: i64,
 }
