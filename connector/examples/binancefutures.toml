@@ -1,13 +1,7 @@
-# Testnet: wss://fstream.binancefuture.com/ws
-# Mainnet: wss://fstream.binance.com/ws
-# Private: wss://fstream-auth.binance.com/ws
-# Low-Latency Market Maker: wss://fstream-mm.binance.com/ws
-stream_url = "wss://fstream.binancefuture.com/ws"
-
-# Testnet: https://testnet.binancefuture.com
-# Mainnet: https://fapi.binance.com
-# Low-Latency Market Maker: https://fapi-mm.binance.com
-api_url = "https://testnet.binancefuture.com"
+# Binance Futures Demo configuration without credentials.
+# Prefer binancefutures-demo.toml.example when creating a local credential file.
+stream_url = "wss://demo-fstream.binance.com/ws"
+api_url = "https://demo-fapi.binance.com"
 
 order_prefix = "test"
 api_key = ""

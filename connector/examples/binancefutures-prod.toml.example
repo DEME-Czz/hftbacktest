@@ -1,0 +1,10 @@
+# Binance USD-M Futures production endpoints.
+# Public market subscriptions use the standard WebSocket Streams endpoint.
+market_stream_url = "wss://fstream.binance.com/ws"
+# Connector appends /<listenKey>, producing /private/ws/<listenKey>.
+user_stream_url = "wss://fstream.binance.com/private/ws"
+api_url = "https://fapi.binance.com"
+
+order_prefix = "prod"
+api_key = ""
+secret = ""

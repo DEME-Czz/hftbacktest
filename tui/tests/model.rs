@@ -1,7 +1,11 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use hftbacktest::types::{
-    Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT, LOCAL_BUY_TRADE_EVENT, LiveEvent,
+    ErrorKind, Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT, LOCAL_BUY_TRADE_EVENT,
+    LiveError, LiveEvent, Value,
 };
 use hftbacktest_tui::{AppState, Health};
 
@@ -75,4 +79,53 @@ fn zero_quantity_removes_depth_level() {
     });
 
     assert_eq!(app.best_bid(), None);
+}
+
+#[test]
+fn account_events_update_balance_and_fill_totals_for_selected_symbol() {
+    let mut app = AppState::new("dogeusdt", 0.00001, 1.0, 100);
+    app.apply(LiveEvent::Balance {
+        symbol: "dogeusdt".into(),
+        balance: 123.45,
+        exch_ts: 1_000,
+    });
+    app.apply(LiveEvent::Fill {
+        symbol: "dogeusdt".into(),
+        trade_id: 42,
+        qty: -10.0,
+        price: 0.18,
+        fee: 0.002,
+        exch_ts: 1_100,
+    });
+    app.apply(LiveEvent::Balance {
+        symbol: "btcusdt".into(),
+        balance: 999.0,
+        exch_ts: 1_200,
+    });
+
+    assert_eq!(app.balance(), Some(123.45));
+    assert_eq!(app.num_fills(), 1);
+    assert_eq!(app.filled_volume(), 10.0);
+    assert_eq!(app.fees(), 0.002);
+    assert!(app.events().iter().any(|event| event.contains("FILL 42")));
+}
+
+#[test]
+fn post_only_rejection_is_shown_as_reject_instead_of_system_error() {
+    let mut app = AppState::new("dogeusdt", 0.00001, 1.0, 100);
+    let mut details = HashMap::new();
+    details.insert("code".into(), Value::Int(-5022));
+    details.insert(
+        "msg".into(),
+        Value::String("Post Only order will be rejected".into()),
+    );
+
+    app.apply(LiveEvent::Error(LiveError::with(
+        ErrorKind::OrderError,
+        Value::Map(details),
+    )));
+
+    let event = app.events().back().expect("TUI event");
+    assert!(event.starts_with("REJECT POST_ONLY:"));
+    assert!(!event.starts_with("ERROR"));
 }

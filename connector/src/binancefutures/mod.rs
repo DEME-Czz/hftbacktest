@@ -1,3 +1,4 @@
+mod events;
 mod market_data_stream;
 mod msg;
 mod ordermanager;
@@ -86,7 +87,15 @@ impl From<BinanceFuturesError> for Value {
 
 #[derive(Deserialize)]
 pub struct Config {
+    /// Legacy shared WebSocket URL. Kept for existing testnet configurations.
+    #[serde(default)]
     stream_url: String,
+    /// WebSocket endpoint used for public market-data subscriptions.
+    #[serde(default)]
+    market_stream_url: Option<String>,
+    /// WebSocket endpoint prefix used for the listen-key user stream.
+    #[serde(default)]
+    user_stream_url: Option<String>,
     api_url: String,
     #[serde(default)]
     order_prefix: String,
@@ -94,6 +103,18 @@ pub struct Config {
     api_key: String,
     #[serde(default)]
     secret: String,
+}
+
+impl Config {
+    fn market_stream_url(&self) -> &str {
+        self.market_stream_url
+            .as_deref()
+            .unwrap_or(&self.stream_url)
+    }
+
+    fn user_stream_url(&self) -> &str {
+        self.user_stream_url.as_deref().unwrap_or(&self.stream_url)
+    }
 }
 
 type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
@@ -109,7 +130,7 @@ pub struct BinanceFutures {
 
 impl BinanceFutures {
     pub fn connect_market_data_stream(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
-        let base_url = self.config.stream_url.clone();
+        let base_url = self.config.market_stream_url().to_owned();
         let client = self.client.clone();
         let symbol_tx = self.symbol_tx.clone();
 
@@ -144,7 +165,7 @@ impl BinanceFutures {
     }
 
     pub fn connect_user_data_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
-        let base_url = self.config.stream_url.clone();
+        let base_url = self.config.user_stream_url().to_owned();
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         let instruments = self.symbols.clone();
@@ -194,7 +215,7 @@ impl ConnectorBuilder for BinanceFutures {
         let config: Config = toml::from_str(config)?;
 
         let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
-        let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret);
+        let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret)?;
         let (symbol_tx, _) = broadcast::channel(500);
 
         Ok(BinanceFutures {

@@ -1,8 +1,12 @@
 use chrono::Utc;
 use hftbacktest::types::{OrdType, Side, TimeInForce};
 use serde::Deserialize;
+use std::time::Duration;
 
-use super::msg::{rest, rest::PositionInformationV3};
+use super::msg::{
+    rest,
+    rest::{AccountInformationV3, PositionInformationV3},
+};
 use crate::{
     binancefutures::{
         BinanceFuturesError,
@@ -23,13 +27,17 @@ pub struct BinanceFuturesClient {
 }
 
 impl BinanceFuturesClient {
-    pub fn new(url: &str, api_key: &str, secret: &str) -> Self {
-        Self {
-            client: reqwest::Client::new(),
+    pub fn new(url: &str, api_key: &str, secret: &str) -> Result<Self, reqwest::Error> {
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(15))
+            .build()?;
+        Ok(Self {
+            client,
             url: url.to_string(),
             api_key: api_key.to_string(),
             secret: secret.to_string(),
-        }
+        })
     }
 
     async fn get_noauth<T: for<'a> Deserialize<'a>>(
@@ -43,6 +51,7 @@ impl BinanceFuturesClient {
             .header("Accept", "application/json")
             .send()
             .await?
+            .error_for_status()?
             .json()
             .await?;
         Ok(resp)
@@ -70,6 +79,7 @@ impl BinanceFuturesClient {
             .header("X-MBX-APIKEY", &self.api_key)
             .send()
             .await?
+            .error_for_status()?
             .json()
             .await?;
         Ok(resp)
@@ -360,6 +370,10 @@ impl BinanceFuturesClient {
         let resp: Vec<PositionInformationV3> =
             self.get("/fapi/v3/positionRisk", String::new()).await?;
         Ok(resp)
+    }
+
+    pub async fn get_account_information(&self) -> Result<AccountInformationV3, reqwest::Error> {
+        self.get("/fapi/v3/account", String::new()).await
     }
 
     pub async fn get_depth(&self, symbol: &str) -> Result<rest::Depth, reqwest::Error> {

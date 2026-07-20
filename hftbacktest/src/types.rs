@@ -6,9 +6,7 @@ use std::{
 
 use anyhow::Error;
 use bincode::{
-    BorrowDecode,
-    Decode,
-    Encode,
+    BorrowDecode, Decode, Encode,
     de::{BorrowDecoder, Decoder},
     enc::Encoder,
     error::{DecodeError, EncodeError},
@@ -139,6 +137,19 @@ pub enum LiveEvent {
     Position {
         symbol: String,
         qty: f64,
+        exch_ts: i64,
+    },
+    Balance {
+        symbol: String,
+        balance: f64,
+        exch_ts: i64,
+    },
+    Fill {
+        symbol: String,
+        trade_id: i64,
+        qty: f64,
+        price: f64,
+        fee: f64,
         exch_ts: i64,
     },
     Error(LiveError),
@@ -728,23 +739,18 @@ pub enum LiveRequest {
 
 /// Provides state values.
 ///
-/// **Note:** In a live bot, currently only `position` value is delivered correctly, and other
-/// values are invalid.
+/// In live trading, `balance` is the wallet balance of the instrument's quote asset. Trade-related
+/// values are cumulative since the bot was started.
 #[repr(C)]
 #[derive(PartialEq, Clone, Debug, Default)]
 pub struct StateValues {
     pub position: f64,
-    /// Backtest only
     pub balance: f64,
-    /// Backtest only
     pub fee: f64,
     // todo: currently, they are cumulative values, but they need to be values within the record
     //       interval.
-    /// Backtest only
     pub num_trades: i64,
-    /// Backtest only
     pub trading_volume: f64,
-    /// Backtest only
     pub trading_value: f64,
 }
 
@@ -986,12 +992,8 @@ mod tests {
     use crate::{
         prelude::LOCAL_EVENT,
         types::{
-            BUY_EVENT,
-            Event,
-            LOCAL_BID_DEPTH_CLEAR_EVENT,
-            LOCAL_BID_DEPTH_EVENT,
-            LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
-            LOCAL_BUY_TRADE_EVENT,
+            BUY_EVENT, Event, LOCAL_BID_DEPTH_CLEAR_EVENT, LOCAL_BID_DEPTH_EVENT,
+            LOCAL_BID_DEPTH_SNAPSHOT_EVENT, LOCAL_BUY_TRADE_EVENT,
         },
     };
 

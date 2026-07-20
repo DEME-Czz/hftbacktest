@@ -7,9 +7,7 @@ use std::{
 };
 
 use bincode::{
-    Decode,
-    Encode,
-    config,
+    Decode, Encode, config,
     error::{DecodeError, EncodeError},
 };
 use iceoryx2::{
@@ -20,8 +18,7 @@ use thiserror::Error;
 
 use crate::{
     live::{
-        BotError,
-        Instrument,
+        BotError, Instrument,
         ipc::{
             Channel,
             config::{ChannelConfig, MAX_PAYLOAD_SIZE},
@@ -353,7 +350,9 @@ impl Channel for IceoryxUnifiedChannel {
                             }
                             LiveEvent::Feed { symbol, .. }
                             | LiveEvent::Order { symbol, .. }
-                            | LiveEvent::Position { symbol, .. } => {
+                            | LiveEvent::Position { symbol, .. }
+                            | LiveEvent::Balance { symbol, .. }
+                            | LiveEvent::Fill { symbol, .. } => {
                                 if let Some(inst_no) = ch.symbol_to_inst_no.get(symbol) {
                                     return Ok((*inst_no, ev));
                                 }

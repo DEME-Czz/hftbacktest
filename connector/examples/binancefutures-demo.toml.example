@@ -1,4 +1,5 @@
-# Binance Futures Demo endpoints
+# Binance Futures Demo uses one WebSocket endpoint for public and listen-key streams.
+# `stream_url` is the backward-compatible shared URL field.
 stream_url = "wss://demo-fstream.binance.com/ws"
 api_url = "https://demo-fapi.binance.com"
 

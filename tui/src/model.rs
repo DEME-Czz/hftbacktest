@@ -5,7 +5,7 @@ use std::{
 
 use hftbacktest::types::{
     ErrorKind, Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT, LOCAL_BUY_TRADE_EVENT,
-    LOCAL_SELL_TRADE_EVENT, LiveEvent, Order, OrderId,
+    LOCAL_SELL_TRADE_EVENT, LiveError, LiveEvent, Order, OrderId, Value,
 };
 
 const ACTIVE_AGE: Duration = Duration::from_secs(2);
@@ -31,6 +31,10 @@ pub struct AppState {
     orders: HashMap<OrderId, Order>,
     events: VecDeque<String>,
     position: Option<f64>,
+    balance: Option<f64>,
+    num_fills: u64,
+    filled_volume: f64,
+    fees: f64,
     last_feed_at: Option<Instant>,
     last_feed_latency_ns: Option<i64>,
     last_order_latency_ns: Option<i64>,
@@ -56,6 +60,10 @@ impl AppState {
             orders: HashMap::new(),
             events: VecDeque::new(),
             position: None,
+            balance: None,
+            num_fills: 0,
+            filled_volume: 0.0,
+            fees: 0.0,
             last_feed_at: None,
             last_feed_latency_ns: None,
             last_order_latency_ns: None,
@@ -102,17 +110,46 @@ impl AppState {
                 self.position = Some(qty);
                 self.push_event(format!("POSITION {qty:+}"));
             }
+            LiveEvent::Balance {
+                symbol,
+                balance,
+                exch_ts: _,
+            } if symbol == self.symbol => {
+                self.balance = Some(balance);
+                self.push_event(format!("BALANCE {balance:.8}"));
+            }
+            LiveEvent::Fill {
+                symbol,
+                trade_id,
+                qty,
+                price,
+                fee,
+                exch_ts: _,
+            } if symbol == self.symbol => {
+                self.num_fills = self.num_fills.saturating_add(1);
+                self.filled_volume += qty.abs();
+                self.fees += fee;
+                self.push_event(format!("FILL {trade_id} {qty:+} @ {price:.8} fee {fee:.8}"));
+            }
             LiveEvent::Error(error) => {
                 self.forced_health = match error.kind {
                     ErrorKind::CriticalConnectionError => Some(Health::Critical),
                     ErrorKind::ConnectionInterrupted => Some(Health::Disconnected),
                     ErrorKind::OrderError | ErrorKind::Custom(_) => self.forced_health,
                 };
-                self.push_event(format!("ERROR {:?}: {:?}", error.kind, error.value));
+                if is_post_only_rejection(&error) {
+                    self.push_event(format!("REJECT POST_ONLY: {:?}", error.value));
+                } else {
+                    self.push_event(format!("ERROR {:?}: {:?}", error.kind, error.value));
+                }
             }
             LiveEvent::BatchStart => self.push_event("BATCH START".into()),
             LiveEvent::BatchEnd => self.push_event("BATCH END".into()),
-            LiveEvent::Feed { .. } | LiveEvent::Order { .. } | LiveEvent::Position { .. } => {}
+            LiveEvent::Feed { .. }
+            | LiveEvent::Order { .. }
+            | LiveEvent::Position { .. }
+            | LiveEvent::Balance { .. }
+            | LiveEvent::Fill { .. } => {}
         }
     }
 
@@ -149,6 +186,18 @@ impl AppState {
     }
     pub fn position(&self) -> Option<f64> {
         self.position
+    }
+    pub fn balance(&self) -> Option<f64> {
+        self.balance
+    }
+    pub fn num_fills(&self) -> u64 {
+        self.num_fills
+    }
+    pub fn filled_volume(&self) -> f64 {
+        self.filled_volume
+    }
+    pub fn fees(&self) -> f64 {
+        self.fees
     }
     pub fn paused(&self) -> bool {
         self.paused
@@ -206,6 +255,14 @@ impl AppState {
     fn push_event(&mut self, event: String) {
         push_bounded(&mut self.events, event, self.history_capacity);
     }
+}
+
+fn is_post_only_rejection(error: &LiveError) -> bool {
+    error.kind == ErrorKind::OrderError
+        && matches!(
+            error.value.get_map().and_then(|value| value.get("code")),
+            Some(Value::Int(-5022))
+        )
 }
 
 fn update_level(levels: &mut BTreeMap<i64, f64>, tick: i64, qty: f64) {

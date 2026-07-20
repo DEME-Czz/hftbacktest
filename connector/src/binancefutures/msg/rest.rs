@@ -114,6 +114,23 @@ pub struct PositionInformationV3 {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct AccountInformationV3 {
+    pub assets: Vec<AccountAssetV3>,
+    pub positions: Vec<PositionInformationV3>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct AccountAssetV3 {
+    #[serde(deserialize_with = "to_lowercase")]
+    pub asset: String,
+    #[serde(rename = "walletBalance")]
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub wallet_balance: f64,
+    #[serde(rename = "updateTime")]
+    pub update_time: i64,
+}
+
+#[derive(Deserialize, Debug)]
 pub struct Depth {
     #[serde(rename = "lastUpdateId")]
     pub last_update_id: i64,
@@ -127,7 +144,7 @@ pub struct Depth {
 
 #[cfg(test)]
 mod tests {
-    use super::PositionInformationV3;
+    use super::{AccountInformationV3, PositionInformationV3};
 
     #[test]
     fn deserializes_position_information_v3_without_v2_only_fields() {
@@ -159,5 +176,22 @@ mod tests {
         assert_eq!(position.symbol, "dogeusdt");
         assert_eq!(position.position_amount, 125.0);
         assert_eq!(position.update_time, 1_720_736_417_660);
+    }
+
+    #[test]
+    fn deserializes_account_information_v3_minimal_fields() {
+        let json = r#"{
+            "totalWalletBalance":"123.45",
+            "assets":[{"asset":"USDT","walletBalance":"123.45","updateTime":1625474304765}],
+            "positions":[{"symbol":"DOGEUSDT","positionSide":"BOTH","positionAmt":"156",
+                "unrealizedProfit":"0","isolatedMargin":"0","notional":"11.33",
+                "isolatedWallet":"0","initialMargin":"0","maintMargin":"0","updateTime":1625474304765}]
+        }"#;
+
+        let account: AccountInformationV3 = serde_json::from_str(json).unwrap();
+        assert_eq!(account.assets[0].asset, "usdt");
+        assert_eq!(account.assets[0].wallet_balance, 123.45);
+        assert_eq!(account.positions[0].symbol, "dogeusdt");
+        assert_eq!(account.positions[0].position_amount, 156.0);
     }
 }

@@ -22,8 +22,7 @@ use iceoryx2::{
 };
 use tokio::{
     runtime::Builder,
-    select,
-    signal,
+    select, signal,
     sync::{
         Notify,
         mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
@@ -51,6 +50,11 @@ mod utils;
 
 struct Position {
     qty: f64,
+    exch_ts: i64,
+}
+
+struct Balance {
+    value: f64,
     exch_ts: i64,
 }
 
@@ -122,6 +126,7 @@ async fn run_publish_task(
 ) -> Result<(), ChannelError> {
     let mut depth = HashMap::new();
     let mut position: HashMap<String, Position> = HashMap::new();
+    let mut balance: HashMap<String, Balance> = HashMap::new();
 
     loop {
         select! {
@@ -161,6 +166,17 @@ async fn run_publish_task(
                             )?;
                         }
 
+                        if let Some(balance) = balance.get(&symbol) {
+                            bot_tx.send(
+                                id,
+                                &LiveEvent::Balance {
+                                    symbol: symbol.clone(),
+                                    balance: balance.value,
+                                    exch_ts: balance.exch_ts,
+                                },
+                            )?;
+                        }
+
                         match depth.entry(symbol) {
                             Entry::Occupied(mut entry) => {
                                 let depth_: &mut FusedHashMapMarketDepth = entry.get_mut();
@@ -184,7 +200,7 @@ async fn run_publish_task(
                     }
                     PublishEvent::LiveEvent(ev) => {
                         // The live event will only be published if the result is true.
-                        for ev in handle_ev(ev, &mut depth, &mut position) {
+                        for ev in handle_ev(ev, &mut depth, &mut position, &mut balance) {
                             bot_tx.send(TO_ALL, &ev)?;
                         }
                     }
@@ -213,6 +229,7 @@ fn handle_ev(
     ev: LiveEvent,
     depth: &mut HashMap<String, FusedHashMapMarketDepth>,
     position: &mut HashMap<String, Position>,
+    balance: &mut HashMap<String, Balance>,
 ) -> Vec<LiveEvent> {
     match &ev {
         LiveEvent::Feed { symbol, event } => {
@@ -309,6 +326,29 @@ fn handle_ev(
                 );
                 return vec![ev];
             }
+        }
+        LiveEvent::Balance {
+            symbol,
+            balance: value,
+            exch_ts,
+        } => {
+            if let Some(balance) = balance.get_mut(symbol) {
+                return if *exch_ts >= balance.exch_ts {
+                    balance.value = *value;
+                    balance.exch_ts = *exch_ts;
+                    vec![ev]
+                } else {
+                    vec![]
+                };
+            }
+            balance.insert(
+                symbol.clone(),
+                Balance {
+                    value: *value,
+                    exch_ts: *exch_ts,
+                },
+            );
+            return vec![ev];
         }
         _ => {}
     }

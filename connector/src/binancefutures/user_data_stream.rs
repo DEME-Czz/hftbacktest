@@ -14,12 +14,12 @@ use tokio::{
     time,
 };
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     binancefutures::{
-        BinanceFuturesError,
-        SharedSymbolSet,
+        BinanceFuturesError, SharedSymbolSet,
+        events::{balance_events, fill_event},
         msg::stream::{EventStream, Stream},
         ordermanager::SharedOrderManager,
         rest::BinanceFuturesClient,
@@ -64,6 +64,19 @@ impl UserDataStream {
                 return Err(BinanceFuturesError::ListenKeyExpired);
             }
             EventStream::AccountUpdate(data) => {
+                let symbols = self.symbols.lock().unwrap();
+                for event in balance_events(
+                    &symbols,
+                    data.account
+                        .balance
+                        .iter()
+                        .map(|balance| (balance.asset.as_str(), balance.wallet_balance)),
+                    data.transaction_time * 1_000_000,
+                ) {
+                    self.ev_tx.send(PublishEvent::LiveEvent(event)).unwrap();
+                }
+                drop(symbols);
+
                 for position in data.account.position {
                     self.ev_tx
                         .send(PublishEvent::LiveEvent(LiveEvent::Position {
@@ -77,18 +90,36 @@ impl UserDataStream {
             EventStream::OrderTradeUpdate(data) => {
                 match self.order_manager.lock().unwrap().update_from_ws(&data) {
                     Ok(Some(order)) => {
+                        let fill = fill_event(&data);
                         self.ev_tx
                             .send(PublishEvent::LiveEvent(LiveEvent::Order {
                                 symbol: data.order.symbol,
                                 order,
                             }))
                             .unwrap();
+                        if let Some(fill) = fill {
+                            self.ev_tx.send(PublishEvent::LiveEvent(fill)).unwrap();
+                        }
                     }
                     Ok(None) => {
                         // This order is already deleted.
                     }
                     Err(BinanceFuturesError::PrefixUnmatched) => {
                         // This order is not created by this connector.
+                    }
+                    Err(BinanceFuturesError::OrderNotFound) => {
+                        // User data streams are account-wide. In particular, the startup
+                        // cancel-all request can produce updates for orders created by a previous
+                        // connector process that used the same configured prefix. The exact
+                        // client-order-id map, rather than the reusable prefix, is the ownership
+                        // boundary for this process.
+                        debug!(
+                            symbol = %data.order.symbol,
+                            client_order_id = %data.order.client_order_id,
+                            exchange_order_id = data.order.order_id,
+                            status = ?data.order.order_status,
+                            "Ignoring an order update that is not tracked by this connector process."
+                        );
                     }
                     Err(error) => {
                         error!(
@@ -139,10 +170,8 @@ impl UserDataStream {
             }
 
             // Fetches the initial states such as positions and open orders.
-            if let Err(error) =
-                get_position_information(client.clone(), symbols, ev_tx.clone()).await
-            {
-                error!(?error, "Couldn't get position information.");
+            if let Err(error) = get_initial_state(client.clone(), symbols, ev_tx.clone()).await {
+                error!(?error, "Couldn't get initial account state.");
             }
         });
 
@@ -182,6 +211,20 @@ impl UserDataStream {
                                     ev_tx.clone()
                                 ).await {
                                     error!(?error, %symbol, "Couldn't cancel all orders.");
+                                }
+
+                                // The user stream is normally connected before any bot registers
+                                // an instrument. Its connection-time snapshot therefore cannot map
+                                // an asset balance to this newly registered symbol. Refresh the
+                                // account state here so late registrations receive both position
+                                // and quote-asset wallet balance without waiting for a future
+                                // ACCOUNT_UPDATE event.
+                                if let Err(error) = get_initial_state(
+                                    client,
+                                    HashSet::from([symbol.clone()]),
+                                    ev_tx,
+                                ).await {
+                                    error!(?error, %symbol, "Couldn't refresh account state after instrument registration.");
                                 }
                             });
                         }
@@ -251,14 +294,48 @@ pub async fn cancel_all(
     Ok(())
 }
 
-pub async fn get_position_information(
+pub async fn get_initial_state(
     client: BinanceFuturesClient,
     mut symbols: HashSet<String>,
     ev_tx: UnboundedSender<PublishEvent>,
 ) -> Result<(), BinanceFuturesError> {
     // todo: rate-limit throttling.
-    let position_information = client.get_position_information().await?;
-    position_information.into_iter().for_each(|position| {
+    info!(?symbols, "Requesting Binance Futures account snapshot.");
+    let account = client.get_account_information().await?;
+    let balance_ts = account
+        .assets
+        .iter()
+        .map(|asset| asset.update_time)
+        .max()
+        .unwrap_or_default()
+        * 1_000_000;
+    let balance_events = balance_events(
+        &symbols,
+        account
+            .assets
+            .iter()
+            .map(|asset| (asset.asset.as_str(), asset.wallet_balance)),
+        balance_ts,
+    );
+    if balance_events.is_empty() {
+        warn!(
+            ?symbols,
+            assets = ?account.assets.iter().map(|asset| asset.asset.as_str()).collect::<Vec<_>>(),
+            "Binance account snapshot contained no balance matching the registered symbols."
+        );
+    }
+    for event in balance_events {
+        ev_tx.send(PublishEvent::LiveEvent(event)).unwrap();
+    }
+
+    info!(
+        registered_symbols = symbols.len(),
+        assets = account.assets.len(),
+        positions = account.positions.len(),
+        "Received Binance Futures account snapshot."
+    );
+
+    account.positions.into_iter().for_each(|position| {
         symbols.remove(&position.symbol);
         ev_tx
             .send(PublishEvent::LiveEvent(LiveEvent::Position {

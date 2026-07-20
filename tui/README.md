@@ -11,7 +11,7 @@
 - 当前持仓、活动订单、成交回报和订单延迟
 - Connector 上报的连接异常与订单错误
 
-TUI 不是交易账户管理工具。当前代码没有把钱包余额、可用保证金、保证金率、杠杆和完整账户状态发布到 IPC，因此这些字段不能显示为可信数值。
+TUI 不是交易账户管理工具。当前 IPC 会发布交易品种报价资产的钱包余额和本次 TUI 运行期间收到的成交/手续费；可用保证金、保证金率、杠杆和完整账户状态仍未发布。
 
 ## 2. 启动方式
 
@@ -21,11 +21,11 @@ TUI 不是交易账户管理工具。当前代码没有把钱包余额、可用�
 cargo build --release --package hftbacktest-tui
 ```
 
-然后在 Connector 和策略启动后运行：
+生产 Connector 启动后运行：
 
 ```bash
 ./target/release/hftbacktest-tui \
-    binancefutures-demo-v3 \
+    binancefutures-prod \
     --symbol dogeusdt \
     --tick-size 0.00001 \
     --lot-size 1
@@ -33,9 +33,9 @@ cargo build --release --package hftbacktest-tui
 
 其中：
 
-- `binancefutures-demo-v3` 是已运行 Connector 的 IPC `NAME`
+- `binancefutures-prod` 是已运行 Connector 的 IPC `NAME`，必须与 Connector 启动参数一致
 - `symbol` 使用 Connector 要求的大小写；Binance 为小写，Bybit 为大写
-- TUI 应在 Connector 和策略之后启动；退出 TUI 不影响策略和 Connector
+- TUI 应在 Connector 之后启动；策略可以在 TUI 之前或之后启动
 - 第一阶段不读取交易所配置文件，也不接触 API Key 或 Secret
 
 ## 3. 主界面
@@ -43,7 +43,7 @@ cargo build --release --package hftbacktest-tui
 默认使用单屏仪表盘，适配至少 `120 x 32` 的终端：
 
 ```text
-┌ HftBacktest Live ─ binancefutures-demo-v3 ─ DOGEUSDT ─ READ ONLY ─ 09:17:00 ┐
+┌ HftBacktest Live ─ binancefutures-prod ─ DOGEUSDT ─ READ ONLY ─ 09:17:00 ┐
 │ IPC ● ACTIVE  Feed age 12ms  Order age 318ms  Errors 2  Uptime 00:41:23       │
 ├ Market ───────────────────────────────┬ Position ─────────────────────────────┤
 │ Last       0.18342                    │ Net qty                   +300 DOGE    │
@@ -124,12 +124,16 @@ Connector ── Iceoryx <NAME>/ToBot ──► Trading Bot
 - `LiveEvent::Feed` 更新盘口、BBO、最近成交和行情延迟
 - `LiveEvent::Order` 更新订单表、成交记录和订单延迟
 - `LiveEvent::Position` 更新净持仓
+- `LiveEvent::Balance` 更新该品种报价资产的钱包余额
+- `LiveEvent::Fill` 更新成交次数、成交量和手续费累计值
 - `LiveEvent::Error` 写入告警列表
 - `BatchStart` / `BatchEnd` 用于原子刷新快照
 
 TUI 不应使用 `LiveBotBuilder`，也不应向 `<NAME>/FromBot` 发送 `RegisterInstrument`。当前 Connector 在注册品种时可能撤销该品种的全部活动订单；监控工具不能触发这一副作用。
 
 这个只读旁路方案有一个边界：TUI 只能收到启动之后的广播事件，无法主动索取初始快照。推荐在第二阶段为协议新增无交易副作用的 `SubscribeTelemetry` 请求，或者由 Connector 增加独立的只读状态/遥测通道，让后启动的 TUI 能安全取得盘口、订单和持仓快照。
+因此 TUI 启动时显示 `unavailable` 不代表交易所一定没有该数据；它可能只是在等待下一条
+行情、余额或持仓更新。交易策略通过 `RegisterInstrument` 主动取得快照，不受这个只读限制。
 
 ## 6. 状态与告警规则
 
@@ -146,7 +150,7 @@ TUI 不能仅凭“进程存在”判断真实连接状态，第一阶段按事�
 
 以下内容在当前 IPC 中不可用，界面必须明确标为 `unavailable`：
 
-- 钱包余额、可用余额和可用保证金
+- 可用余额和可用保证金
 - 未实现盈亏、已实现盈亏、保证金率
 - 仓位入场价、标记价格、强平价和杠杆
 - Connector WebSocket/REST 的精确连接状态
@@ -161,7 +165,6 @@ tui/
 ├── Cargo.toml
 ├── README.md
 └── src/
-    ├── main.rs          # CLI、终端初始化和退出恢复
     ├── lib.rs           # 可测试的状态模型导出
     ├── main.rs          # CLI、Iceoryx 只读订阅、事件循环和终端恢复
     ├── model.rs         # 盘口、订单、持仓、延迟和健康状态聚合
@@ -189,4 +192,5 @@ tui/
 - 终端缩放不会 panic，退出后光标和终端模式正常恢复
 - IPC 暂时无数据时界面保持响应，并显示 `STALE` 或 `DISCONNECTED`
 - 不读取、记录或显示 API Key、Secret 与签名请求内容
+- 能显示报价资产钱包余额，以及 TUI 启动后收到的成交量和手续费累计值
 - 对当前不存在的数据明确显示 `unavailable`

@@ -22,7 +22,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
     about = "Read-only live monitor for HftBacktest connectors"
 )]
 struct Args {
-    /// Connector IPC name, for example binancefutures-demo-v3.
+    /// Connector IPC name, for example binancefutures-prod.
     name: String,
     #[arg(long)]
     symbol: String,
@@ -83,7 +83,9 @@ fn main() -> Result<()> {
 
     loop {
         while let Some((_destination, live_event)) =
-            receiver.receive().context("IPC receive failed")?
+            receiver.receive().context(
+                "IPC receive failed; connector and TUI may use different LiveEvent protocol versions—rebuild and restart both binaries",
+            )?
         {
             app.apply(live_event);
         }

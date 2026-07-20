@@ -44,7 +44,7 @@ Supported connectors include:
 
     ```bash
     ./target/release/connector \
-        binancefutures-demo-v3 \
+        binancefutures-demo \
         binancefutures \
         connector/examples/binancefutures-demo.toml
     ```
@@ -53,9 +53,30 @@ Supported connectors include:
 
 Note: Since Connector communicates with bots via shared memory, both Connector and the bots must run on the same machine.
 
-## Binance Futures Demo Environment
+## Binance Futures WebSocket configuration
 
-The repository's live grid example is currently configured for Binance Futures Demo and `DOGEUSDT`. Its IPC name is `binancefutures-demo-v3`; the connector command must use the same name. Binance symbols are lowercase inside the bot (`dogeusdt`).
+The Binance Futures connector supports separate public and private WebSocket URLs:
+
+```toml
+market_stream_url = "wss://fstream.binance.com/ws"
+user_stream_url = "wss://fstream.binance.com/private/ws"
+```
+
+- `market_stream_url` is the complete WebSocket endpoint used for public subscription messages.
+- `user_stream_url` is the prefix to which Connector appends `/<listenKey>`.
+- The legacy `stream_url` field remains supported for environments where public and private
+  streams share one endpoint, including the current Demo configuration.
+- Do not configure `user_stream_url` as `wss://fstream.binance.com/private`; Connector expects the
+  `/ws` component to already be present.
+- The public Streams subscription protocol used by this connector has been verified against
+  `wss://fstream.binance.com/ws`. Although `/market/ws` accepts a subscription request, it did not
+  publish the DOGEUSDT depth stream during integration verification and is therefore not used by
+  the production example.
+
+## Binance Futures Demo environment
+
+Use Demo to validate credentials, connectivity, exchange filters, and order behavior before
+enabling production trading. Binance symbols are lowercase inside the bot (`dogeusdt`).
 
 1. Copy the tracked template, then put Binance Demo credentials in the ignored local configuration file:
 
@@ -72,11 +93,10 @@ The repository's live grid example is currently configured for Binance Futures D
     secret = "<BINANCE_DEMO_SECRET>"
     ```
 
-2. Build the connector and live example:
+2. Build Connector:
 
     ```bash
     cargo build --release --package connector
-    cargo build --release --package hftbacktest --example gridtrading_live
     ```
 
 3. Start the connector first. If Binance must be reached through an HTTP proxy, set `HTTPS_PROXY`; the REST client and both WebSocket streams use it. `HTTP_PROXY` and `ALL_PROXY` may also be set for consistency:
@@ -88,30 +108,79 @@ The repository's live grid example is currently configured for Binance Futures D
     ALL_PROXY=http://127.0.0.1:7890 \
     RUST_LOG=info \
     ./target/release/connector \
-        binancefutures-demo-v3 \
+        binancefutures-demo \
         binancefutures \
         connector/examples/binancefutures-demo.toml
     ```
 
-4. In another terminal, start the strategy:
+The checked-in `gridtrading_live` example is intentionally configured for the production IPC name;
+do not use it with this Demo connector without first changing its connector name.
+
+## Binance Futures production environment
+
+The live grid example trades `DOGEUSDT` through the IPC name `binancefutures-prod`. The `NAME` in
+the connector command and the name in `gridtrading_live.rs` must match exactly.
+
+1. Copy the production template and enter a production API key and secret:
 
     ```bash
-    RUST_LOG=info ./target/release/examples/gridtrading_live
+    cp connector/examples/binancefutures-prod.toml.example \
+        connector/examples/binancefutures-prod.toml
+    ```
+
+   Use a dedicated key with USD-M Futures trading enabled, withdrawals disabled, and an IP
+   allowlist. Never reuse Demo credentials in the production file.
+
+2. Build both binaries:
+
+    ```bash
+    cargo build --release --package connector
+    cargo build --release --package hftbacktest --example gridtrading_live
+    ```
+
+3. Start Connector first:
+
+    ```bash
+    ulimit -n 4096
+    RUST_LOG=info \
+    RUST_BACKTRACE=1 \
+    ./target/release/connector \
+        binancefutures-prod \
+        binancefutures \
+        connector/examples/binancefutures-prod.toml
+    ```
+
+4. Wait until Connector is running without connection errors. In another terminal, start the
+   strategy:
+
+    ```bash
+    RUST_LOG=info \
+    RUST_BACKTRACE=1 \
+    ./target/release/examples/gridtrading_live
     ```
 
 The DOGE example uses a price tick of `0.00001`, a quantity step of `1`, and an order quantity of `100`. Before changing the symbol, update the symbol, tick size, lot size, minimum grid step, and order quantity in `hftbacktest/examples/gridtrading_live.rs` from that symbol's current exchange filters. Every non-reduce-only order must also satisfy Binance's minimum notional.
+Before placing orders, the example waits up to 30 seconds for both sides of the market depth and a
+received, finite quote-asset wallet balance. Zero position and zero balance are valid synchronized
+states. On timeout, the error includes `account_ready`, `best_bid_tick`, and `best_ask_tick`, so an
+account-stream failure can be distinguished from a market-stream failure.
 
 ### Current account-state behavior
 
-- At startup, the Binance Futures connector fetches active positions and symbols with open orders
-  from `/fapi/v3/positionRisk`; configured symbols omitted by Binance are initialized with zero
+- At startup, the Binance Futures connector fetches quote-asset wallet balances and active
+  positions from `/fapi/v3/account`; configured symbols omitted by Binance are initialized with zero
   position.
-- It receives account updates from the user-data stream, but currently publishes position changes only. Balance entries in `ACCOUNT_UPDATE` are parsed but not forwarded to the live bot.
-- `StateValues.balance`, fees, volume, value, and trade count are therefore not valid in live mode. The example limits inventory using `max_position`; it does not size orders from wallet balance or available margin.
+- Subsequent wallet-balance and position changes are taken from `ACCOUNT_UPDATE` messages.
+- `StateValues.balance` is the wallet balance of the symbol's quote asset (for example, USDT for
+  DOGEUSDT). Fees, trade count, volume, and value are accumulated from this bot's unique Binance
+  fills since the bot started. The example still limits inventory using `max_position`; it does not
+  size orders from available margin.
 
 ### Trading safety and shutdown behavior
 
 - When a symbol is registered at startup, after reconnection, or later at runtime, the Binance Futures connector cancels all open orders for that symbol on the exchange. This is not limited to orders with `order_prefix`.
+- Restarting Connector repeats this cancel-all behavior. Inspect the exchange account before every
+  restart and do not restart while orders that must remain active are present.
 - `LiveBot::close()` currently performs no exchange cleanup. Stopping the strategy does not guarantee that open orders are canceled or that positions are flattened.
 - Verify the account mode, margin mode, leverage, price/quantity filters, minimum notional, and available margin before enabling real trading.
 - Use a new IPC `NAME` if a previous abnormal termination left unusable shared-memory state.

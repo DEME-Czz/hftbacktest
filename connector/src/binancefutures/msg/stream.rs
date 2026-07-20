@@ -2,7 +2,7 @@ use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use serde::Deserialize;
 
 use super::{from_str_to_side, from_str_to_status, from_str_to_tif, from_str_to_type};
-use crate::utils::{from_str_to_f64, to_lowercase};
+use crate::utils::{from_str_to_f64, from_str_to_f64_opt, to_lowercase};
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
@@ -136,6 +136,7 @@ pub struct Account {
 #[derive(Deserialize, Debug)]
 pub struct Balance {
     #[serde(rename = "a")]
+    #[serde(deserialize_with = "to_lowercase")]
     pub asset: String,
     #[serde(rename = "wb")]
     #[serde(deserialize_with = "from_str_to_f64")]
@@ -229,10 +230,12 @@ pub struct Order {
     #[serde(rename = "L")]
     #[serde(deserialize_with = "from_str_to_f64")]
     pub last_filled_price: f64,
-    // #[serde(rename = "N")]
-    // pub commission_asset: Option<String>,
-    // #[serde(rename = "n")]
-    // pub commission: Option<String>,
+    #[serde(rename = "N")]
+    pub commission_asset: Option<String>,
+    #[serde(rename = "n")]
+    #[serde(default)]
+    #[serde(deserialize_with = "from_str_to_f64_opt")]
+    pub commission: Option<f64>,
     #[serde(rename = "T")]
     pub order_trade_time: i64,
     #[serde(rename = "t")]

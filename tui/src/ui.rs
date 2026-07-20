@@ -100,8 +100,15 @@ fn draw_position(frame: &mut Frame, area: Rect, app: &AppState) {
         .last_order_latency_ns()
         .map(format_ns)
         .unwrap_or_else(|| "unavailable".into());
+    let balance = app
+        .balance()
+        .map(|value| format!("{value:.8}"))
+        .unwrap_or_else(|| "unavailable".into());
     let text = format!(
-        "Net qty       {position}\nOrder lag     {order_lag}\nWallet/PnL    unavailable\nTick / lot    {} / {}",
+        "Net qty       {position}\nWallet        {balance}\nFills/volume  {} / {:.4}\nFees          {:.8}\nOrder lag     {order_lag}\nTick / lot    {} / {}",
+        app.num_fills(),
+        app.filled_volume(),
+        app.fees(),
         app.tick_size(),
         app.lot_size()
     );

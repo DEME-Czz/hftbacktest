@@ -12,26 +12,9 @@ use crate::{
     depth::{L2MarketDepth, MarketDepth},
     live::{Instrument, ipc::Channel},
     types::{
-        Bot,
-        BuildError,
-        ElapseResult,
-        Event,
-        LOCAL_ASK_DEPTH_EVENT,
-        LOCAL_BID_DEPTH_EVENT,
-        LOCAL_BUY_TRADE_EVENT,
-        LOCAL_SELL_TRADE_EVENT,
-        LiveError,
-        LiveEvent,
-        LiveRequest,
-        OrdType,
-        Order,
-        OrderId,
-        OrderRequest,
-        Side,
-        StateValues,
-        Status,
-        TimeInForce,
-        WaitOrderResponse,
+        Bot, BuildError, ElapseResult, Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT,
+        LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveError, LiveEvent, LiveRequest, OrdType,
+        Order, OrderId, OrderRequest, Side, StateValues, Status, TimeInForce, WaitOrderResponse,
     },
 };
 
@@ -273,7 +256,23 @@ where
             LiveEvent::Position { qty, .. } => {
                 unsafe { self.instruments.get_unchecked_mut(inst_no) }
                     .state
-                    .position = qty;
+                    .set_position(qty);
+            }
+            LiveEvent::Balance { balance, .. } => {
+                unsafe { self.instruments.get_unchecked_mut(inst_no) }
+                    .state
+                    .set_balance(balance);
+            }
+            LiveEvent::Fill {
+                trade_id,
+                qty,
+                price,
+                fee,
+                ..
+            } => {
+                unsafe { self.instruments.get_unchecked_mut(inst_no) }
+                    .state
+                    .apply_fill(trade_id, qty, price, fee);
             }
             LiveEvent::Error(error) => {
                 if let Some(handler) = self.error_handler.as_mut() {
@@ -434,9 +433,7 @@ where
 
     #[inline]
     fn state_values(&self, asset_no: usize) -> &StateValues {
-        // todo: implement the missing fields. Trade values need to be changed to a rolling manner,
-        //       unlike the current Python implementation, to support live trading.
-        &self.instruments.get(asset_no).unwrap().state
+        self.instruments.get(asset_no).unwrap().state.values()
     }
 
     #[inline]

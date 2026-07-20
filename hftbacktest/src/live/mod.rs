@@ -3,14 +3,12 @@ use std::collections::HashMap;
 pub use bot::{BotError, LiveBot, LiveBotBuilder};
 pub use recorder::LoggingRecorder;
 
-use crate::{
-    prelude::StateValues,
-    types::{Event, Order, OrderId},
-};
+use crate::types::{Event, Order, OrderId};
 
 mod bot;
 pub mod ipc;
 mod recorder;
+mod state;
 
 /// Provides asset information for internal use.
 pub struct Instrument<MD> {
@@ -23,7 +21,7 @@ pub struct Instrument<MD> {
     orders: HashMap<OrderId, Order>,
     last_feed_latency: Option<(i64, i64)>,
     last_order_latency: Option<(i64, i64, i64)>,
-    state: StateValues,
+    state: state::LiveState,
 }
 
 impl<MD> Instrument<MD> {
