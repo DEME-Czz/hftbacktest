@@ -182,7 +182,7 @@ mod tests {
     fn deserializes_account_information_v3_minimal_fields() {
         let json = r#"{
             "totalWalletBalance":"123.45",
-            "assets":[{"asset":"USDT","walletBalance":"123.45","updateTime":1625474304765}],
+            "assets":[{"asset":"USDT","walletBalance":"123.45","availableBalance":"98.76","updateTime":1625474304765}],
             "positions":[{"symbol":"DOGEUSDT","positionSide":"BOTH","positionAmt":"156",
                 "unrealizedProfit":"0","isolatedMargin":"0","notional":"11.33",
                 "isolatedWallet":"0","initialMargin":"0","maintMargin":"0","updateTime":1625474304765}]
@@ -191,6 +191,7 @@ mod tests {
         let account: AccountInformationV3 = serde_json::from_str(json).unwrap();
         assert_eq!(account.assets[0].asset, "usdt");
         assert_eq!(account.assets[0].wallet_balance, 123.45);
+        assert_eq!(account.assets[0].available_balance, 98.76);
         assert_eq!(account.positions[0].symbol, "dogeusdt");
         assert_eq!(account.positions[0].position_amount, 156.0);
     }

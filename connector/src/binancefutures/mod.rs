@@ -1,4 +1,5 @@
 mod events;
+mod margin;
 mod market_data_stream;
 mod msg;
 mod ordermanager;
