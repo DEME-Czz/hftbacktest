@@ -291,10 +291,17 @@ impl Connector for BinanceFutures {
                                 available_balance = decision.available_balance,
                                 "Skipping order locally because available margin is insufficient."
                             );
+                            let error = BinanceFuturesError::OrderError {
+                                code: -2019,
+                                msg: format!(
+                                    "Local margin guard rejected order: required {:.8}, available {:.8}",
+                                    decision.required_balance, decision.available_balance
+                                ),
+                            };
                             if let Some(order) = order_manager
                                 .lock()
                                 .unwrap()
-                                .update_from_rest_fail(&client_order_id, Some(Status::Expired))
+                                .update_submit_fail(&client_order_id, &error)
                             {
                                 tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
                                     symbol,
@@ -309,7 +316,7 @@ impl Connector for BinanceFutures {
                             if let Some(order) = order_manager
                                 .lock()
                                 .unwrap()
-                                .update_from_rest_fail(&client_order_id, Some(Status::Expired))
+                                .update_submit_fail(&client_order_id, &error)
                             {
                                 tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
                                     symbol,
