@@ -23,7 +23,6 @@ use tracing::{debug, error, warn};
 
 use crate::{
     binancefutures::{
-        margin::MarginGuard,
         ordermanager::{OrderManager, SharedOrderManager},
         rest::BinanceFuturesClient,
     },
@@ -127,7 +126,6 @@ pub struct BinanceFutures {
     symbols: SharedSymbolSet,
     order_manager: SharedOrderManager,
     client: BinanceFuturesClient,
-    margin_guard: Arc<MarginGuard>,
     symbol_tx: Sender<String>,
 }
 
@@ -226,7 +224,6 @@ impl ConnectorBuilder for BinanceFutures {
             symbols: Default::default(),
             order_manager,
             client,
-            margin_guard: Arc::new(MarginGuard::default()),
             symbol_tx,
         })
     }
@@ -261,7 +258,6 @@ impl Connector for BinanceFutures {
     fn submit(&self, symbol: String, mut order: Order, tx: UnboundedSender<PublishEvent>) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
-        let margin_guard = self.margin_guard.clone();
 
         tokio::spawn(async move {
             let client_order_id = order_manager
@@ -271,68 +267,12 @@ impl Connector for BinanceFutures {
 
             match client_order_id {
                 Some(client_order_id) => {
-                    // Serialize the balance check and submission so concurrent grid levels cannot
-                    // all spend the same account snapshot. The conservative 1x notional check
-                    // deliberately avoids depending on the account's configured leverage.
-                    let _margin_permit = margin_guard.lock().await;
-                    let price = order.price_tick as f64 * order.tick_size;
-                    let margin_decision = margin_guard
-                        .check(&client, &symbol, order.side, price, order.qty)
-                        .await;
-                    match margin_decision {
-                        Ok(decision) if decision.is_sufficient() => {}
-                        Ok(decision) => {
-                            warn!(
-                                %symbol,
-                                side = ?order.side,
-                                price,
-                                quantity = order.qty,
-                                required_balance = decision.required_balance,
-                                available_balance = decision.available_balance,
-                                "Skipping order locally because available margin is insufficient."
-                            );
-                            let error = BinanceFuturesError::OrderError {
-                                code: -2019,
-                                msg: format!(
-                                    "Local margin guard rejected order: required {:.8}, available {:.8}",
-                                    decision.required_balance, decision.available_balance
-                                ),
-                            };
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_submit_fail(&client_order_id, &error)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
-                            }
-                            return;
-                        }
-                        Err(error) => {
-                            error!(?error, %symbol, "Skipping order because the margin check failed.");
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_submit_fail(&client_order_id, &error)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
-                            }
-                            return;
-                        }
-                    }
                     let result = client
                         .submit_order(
                             &client_order_id,
                             &symbol,
                             order.side,
-                            price,
+                            order.price_tick as f64 * order.tick_size,
                             get_precision(order.tick_size),
                             order.qty,
                             order.order_type,
