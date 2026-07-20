@@ -283,7 +283,7 @@ impl MarketDataStream {
                             "method": "SUBSCRIBE",
                             "params": [
                                 "{symbol}@trade",
-                                "{symbol}@depth@0ms"
+                                "{symbol}@depth@100ms"
                             ],
                             "id": "{id}"
                         }}"#).into())).await?;

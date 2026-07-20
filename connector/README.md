@@ -103,7 +103,9 @@ The DOGE example uses a price tick of `0.00001`, a quantity step of `1`, and an 
 
 ### Current account-state behavior
 
-- At startup, the Binance Futures connector fetches positions from `/fapi/v2/positionRisk`.
+- At startup, the Binance Futures connector fetches active positions and symbols with open orders
+  from `/fapi/v3/positionRisk`; configured symbols omitted by Binance are initialized with zero
+  position.
 - It receives account updates from the user-data stream, but currently publishes position changes only. Balance entries in `ACCOUNT_UPDATE` are parsed but not forwarded to the live bot.
 - `StateValues.balance`, fees, volume, value, and trade count are therefore not valid in live mode. The example limits inventory using `max_position`; it does not size orders from wallet balance or available margin.
 

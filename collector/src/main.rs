@@ -40,7 +40,7 @@ async fn main() -> Result<(), anyhow::Error> {
             let streams = [
                 "$symbol@trade",
                 "$symbol@bookTicker",
-                "$symbol@depth@0ms",
+                "$symbol@depth@100ms",
                 // "$symbol@@markPrice@1s"
             ]
             .iter()
@@ -57,7 +57,7 @@ async fn main() -> Result<(), anyhow::Error> {
             let streams = [
                 "$symbol@trade",
                 "$symbol@bookTicker",
-                "$symbol@depth@0ms",
+                "$symbol@depth@100ms",
                 // "$symbol@@markPrice@1s"
             ]
             .iter()
@@ -82,7 +82,7 @@ async fn main() -> Result<(), anyhow::Error> {
             let topics = [
                 "orderbook.1.$symbol",
                 "orderbook.50.$symbol",
-                "orderbook.500.$symbol",
+                "orderbook.1000.$symbol",
                 "publicTrade.$symbol",
             ]
             .iter()

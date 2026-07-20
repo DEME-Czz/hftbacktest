@@ -152,7 +152,7 @@ impl BinanceSpotClient {
 
     pub async fn get_depth(&self, symbol: &str) -> Result<rest::Depth, reqwest::Error> {
         let resp: rest::Depth = self
-            .get_noauth("/api/v1/depth", format!("symbol={symbol}&limit=1000"))
+            .get_noauth("/api/v3/depth", format!("symbol={symbol}&limit=1000"))
             .await?;
         Ok(resp)
     }

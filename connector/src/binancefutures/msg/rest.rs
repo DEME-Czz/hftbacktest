@@ -103,41 +103,12 @@ pub struct ErrorResponse {
 }
 
 #[derive(Deserialize, Debug)]
-pub struct PositionInformationV2 {
-    #[serde(rename = "entryPrice")]
-    #[serde(deserialize_with = "from_str_to_f64")]
-    pub entry_price: f64,
-    #[serde(rename = "breakEvenPrice")]
-    #[serde(deserialize_with = "from_str_to_f64")]
-    pub breakeven_price: f64,
-    #[serde(rename = "marginType")]
-    pub margin_type: String,
-    #[serde(rename = "isAutoAddMargin")]
-    pub is_auto_add_margin: String,
-    #[serde(deserialize_with = "from_str_to_f64")]
-    pub leverage: f64,
-    #[serde(rename = "liquidationPrice")]
-    #[serde(deserialize_with = "from_str_to_f64")]
-    pub liquidation_price: f64,
-    #[serde(rename = "markPrice")]
-    #[serde(deserialize_with = "from_str_to_f64")]
-    pub mark_price: f64,
-    #[serde(rename = "maxNotionalValue")]
-    #[serde(deserialize_with = "from_str_to_f64")]
-    pub max_notional_value: f64,
+pub struct PositionInformationV3 {
+    #[serde(deserialize_with = "to_lowercase")]
+    pub symbol: String,
     #[serde(rename = "positionAmt")]
     #[serde(deserialize_with = "from_str_to_f64")]
     pub position_amount: f64,
-    #[serde(deserialize_with = "from_str_to_f64")]
-    pub notional: f64,
-    #[serde(rename = "isolatedWallet")]
-    pub isolated_wallet: String,
-    #[serde(deserialize_with = "to_lowercase")]
-    pub symbol: String,
-    #[serde(rename = "unRealizedProfit")]
-    pub unrealized_pnl: String,
-    #[serde(rename = "positionSide")]
-    pub position_side: String,
     #[serde(rename = "updateTime")]
     pub update_time: i64,
 }
@@ -152,4 +123,41 @@ pub struct Depth {
     pub transaction_time: i64,
     pub bids: Vec<(String, String)>,
     pub asks: Vec<(String, String)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PositionInformationV3;
+
+    #[test]
+    fn deserializes_position_information_v3_without_v2_only_fields() {
+        let json = r#"{
+            "symbol":"DOGEUSDT",
+            "positionSide":"BOTH",
+            "positionAmt":"125",
+            "entryPrice":"0.125",
+            "breakEvenPrice":"0.1251",
+            "markPrice":"0.126",
+            "unRealizedProfit":"0.125",
+            "liquidationPrice":"0",
+            "isolatedMargin":"0",
+            "notional":"15.75",
+            "marginAsset":"USDT",
+            "isolatedWallet":"0",
+            "initialMargin":"0.7875",
+            "maintMargin":"0.1024",
+            "positionInitialMargin":"0.7875",
+            "openOrderInitialMargin":"0",
+            "adl":2,
+            "bidNotional":"0",
+            "askNotional":"0",
+            "updateTime":1720736417660
+        }"#;
+
+        let position: PositionInformationV3 = serde_json::from_str(json).unwrap();
+
+        assert_eq!(position.symbol, "dogeusdt");
+        assert_eq!(position.position_amount, 125.0);
+        assert_eq!(position.update_time, 1_720_736_417_660);
+    }
 }

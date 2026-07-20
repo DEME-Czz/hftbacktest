@@ -2,7 +2,7 @@ use chrono::Utc;
 use hftbacktest::types::{OrdType, Side, TimeInForce};
 use serde::Deserialize;
 
-use super::msg::{rest, rest::PositionInformationV2};
+use super::msg::{rest, rest::PositionInformationV3};
 use crate::{
     binancefutures::{
         BinanceFuturesError,
@@ -145,6 +145,31 @@ impl BinanceFuturesClient {
             .json()
             .await?;
         Ok(resp)
+    }
+
+    async fn delete_query<T: for<'a> Deserialize<'a>>(
+        &self,
+        path: &str,
+        mut params: Vec<(&str, String)>,
+    ) -> Result<T, reqwest::Error> {
+        let timestamp = (Utc::now().timestamp_millis() - 1000).to_string();
+        params.push(("recvWindow", "5000".to_string()));
+        params.push(("timestamp", timestamp));
+
+        let mut request = self
+            .client
+            .delete(format!("{}{}", self.url, path))
+            .header("Accept", "application/json")
+            .header("X-MBX-APIKEY", &self.api_key)
+            .query(&params)
+            .build()?;
+        let signature = sign_hmac_sha256(&self.secret, request.url().query().unwrap_or_default());
+        request
+            .url_mut()
+            .query_pairs_mut()
+            .append_pair("signature", &signature);
+
+        self.client.execute(request).await?.json().await
     }
 
     pub async fn start_user_data_stream(&self) -> Result<String, reqwest::Error> {
@@ -299,20 +324,17 @@ impl BinanceFuturesClient {
         if client_order_ids.len() > 10 {
             return Err(BinanceFuturesError::InvalidRequest);
         }
-        let mut body = String::with_capacity(100);
-        body.push_str("{\"symbol\":\"");
-        body.push_str(symbol);
-        body.push_str("\",\"origClientOrderIdList\":[");
-        for (i, client_order_id) in client_order_ids.iter().enumerate() {
-            if i > 0 {
-                body.push(',');
-            }
-            body.push('\"');
-            body.push_str(client_order_id);
-            body.push('\"');
-        }
-        body.push_str("]}");
-        let resp: Vec<OrderResponseResult> = self.post("/fapi/v1/batchOrders", body).await?;
+        let client_order_ids = serde_json::to_string(&client_order_ids)
+            .map_err(|_| BinanceFuturesError::InvalidRequest)?;
+        let resp: Vec<OrderResponseResult> = self
+            .delete_query(
+                "/fapi/v1/batchOrders",
+                vec![
+                    ("symbol", symbol.to_string()),
+                    ("origClientOrderIdList", client_order_ids),
+                ],
+            )
+            .await?;
         Ok(resp
             .into_iter()
             .map(|resp| match resp {
@@ -334,9 +356,9 @@ impl BinanceFuturesClient {
 
     pub async fn get_position_information(
         &self,
-    ) -> Result<Vec<PositionInformationV2>, reqwest::Error> {
-        let resp: Vec<PositionInformationV2> =
-            self.get("/fapi/v2/positionRisk", String::new()).await?;
+    ) -> Result<Vec<PositionInformationV3>, reqwest::Error> {
+        let resp: Vec<PositionInformationV3> =
+            self.get("/fapi/v3/positionRisk", String::new()).await?;
         Ok(resp)
     }
 

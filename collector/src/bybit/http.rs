@@ -42,7 +42,7 @@ pub async fn connect(
         .await?;
 
     tokio::spawn(async move {
-        let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
         loop {
             select! {
                 result = rx.recv() => {
