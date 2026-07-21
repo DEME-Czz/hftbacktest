@@ -38,9 +38,9 @@ fn main() {
         "Binance account state is ready; starting grid trading."
     );
 
-    let relative_half_spread = 0.005;
-    let relative_grid_interval = 0.005;
-    let grid_num = 10;
+    let relative_half_spread = 0.001;
+    let relative_grid_interval = 0.001;
+    let grid_num = 2;
     let min_grid_step = 0.0001; // DOGEUSDT tick size
     let skew = relative_half_spread / grid_num as f64;
     // At the current demo price this stays above Binance's 5 USDT minimum notional.

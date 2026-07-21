@@ -5,6 +5,8 @@ use serde::{
 };
 
 #[allow(dead_code)]
+pub mod algo_update;
+#[allow(dead_code)]
 pub mod rest;
 #[allow(dead_code)]
 pub mod stream;

@@ -8,6 +8,8 @@ use hftbacktest::types::{
     LOCAL_SELL_TRADE_EVENT, LiveError, LiveEvent, Order, OrderId, Value,
 };
 
+use crate::PositionDirection;
+
 const ACTIVE_AGE: Duration = Duration::from_secs(2);
 const DISCONNECTED_AGE: Duration = Duration::from_secs(10);
 
@@ -32,12 +34,17 @@ pub struct AppState {
     events: VecDeque<String>,
     position: Option<f64>,
     balance: Option<f64>,
+    initial_balance: Option<f64>,
     num_fills: u64,
     filled_volume: f64,
     fees: f64,
     last_feed_at: Option<Instant>,
     last_feed_latency_ns: Option<i64>,
     last_order_latency_ns: Option<i64>,
+    last_position_at: Option<Instant>,
+    last_balance_at: Option<Instant>,
+    last_error_key: Option<String>,
+    repeated_error_count: usize,
     forced_health: Option<Health>,
     paused: bool,
 }
@@ -61,12 +68,17 @@ impl AppState {
             events: VecDeque::new(),
             position: None,
             balance: None,
+            initial_balance: None,
             num_fills: 0,
             filled_volume: 0.0,
             fees: 0.0,
             last_feed_at: None,
             last_feed_latency_ns: None,
             last_order_latency_ns: None,
+            last_position_at: None,
+            last_balance_at: None,
+            last_error_key: None,
+            repeated_error_count: 0,
             forced_health: None,
             paused: false,
         }
@@ -108,6 +120,7 @@ impl AppState {
                 exch_ts: _,
             } if symbol == self.symbol => {
                 self.position = Some(qty);
+                self.last_position_at = Some(Instant::now());
                 self.push_event(format!("POSITION {qty:+}"));
             }
             LiveEvent::Balance {
@@ -115,7 +128,9 @@ impl AppState {
                 balance,
                 exch_ts: _,
             } if symbol == self.symbol => {
+                self.initial_balance.get_or_insert(balance);
                 self.balance = Some(balance);
+                self.last_balance_at = Some(Instant::now());
                 self.push_event(format!("BALANCE {balance:.8}"));
             }
             LiveEvent::Fill {
@@ -137,11 +152,12 @@ impl AppState {
                     ErrorKind::ConnectionInterrupted => Some(Health::Disconnected),
                     ErrorKind::OrderError | ErrorKind::Custom(_) => self.forced_health,
                 };
-                if is_post_only_rejection(&error) {
-                    self.push_event(format!("REJECT POST_ONLY: {:?}", error.value));
+                let message = if is_post_only_rejection(&error) {
+                    format!("REJECT POST_ONLY: {:?}", error.value)
                 } else {
-                    self.push_event(format!("ERROR {:?}: {:?}", error.kind, error.value));
-                }
+                    format!("ERROR {:?}: {:?}", error.kind, error.value)
+                };
+                self.push_or_increment_error(message);
             }
             LiveEvent::BatchStart => self.push_event("BATCH START".into()),
             LiveEvent::BatchEnd => self.push_event("BATCH END".into()),
@@ -187,8 +203,14 @@ impl AppState {
     pub fn position(&self) -> Option<f64> {
         self.position
     }
+    pub fn position_direction(&self) -> PositionDirection {
+        PositionDirection::from_position(self.position)
+    }
     pub fn balance(&self) -> Option<f64> {
         self.balance
+    }
+    pub fn wallet_change(&self) -> Option<f64> {
+        Some(self.balance? - self.initial_balance?)
     }
     pub fn num_fills(&self) -> u64 {
         self.num_fills
@@ -219,6 +241,44 @@ impl AppState {
     }
     pub fn last_order_latency_ns(&self) -> Option<i64> {
         self.last_order_latency_ns
+    }
+    pub fn position_age(&self, now: Instant) -> Option<Duration> {
+        self.last_position_at
+            .map(|at| now.saturating_duration_since(at))
+    }
+    pub fn balance_age(&self, now: Instant) -> Option<Duration> {
+        self.last_balance_at
+            .map(|at| now.saturating_duration_since(at))
+    }
+
+    pub fn mid_price(&self) -> Option<f64> {
+        let (bid, _) = self.best_bid()?;
+        let (ask, _) = self.best_ask()?;
+        Some((bid + ask) / 2.0)
+    }
+
+    pub fn spread_bps(&self) -> Option<f64> {
+        let (bid, _) = self.best_bid()?;
+        let (ask, _) = self.best_ask()?;
+        let mid = (bid + ask) / 2.0;
+        (mid > 0.0).then_some((ask - bid) / mid * 10_000.0)
+    }
+
+    pub fn position_notional(&self) -> Option<f64> {
+        Some(self.position?.abs() * self.mid_price()?)
+    }
+
+    pub fn active_order_counts(&self) -> (usize, usize, usize) {
+        let mut buys = 0;
+        let mut sells = 0;
+        for order in self.orders.values().filter(|order| order.active()) {
+            match order.side {
+                hftbacktest::types::Side::Buy => buys += 1,
+                hftbacktest::types::Side::Sell => sells += 1,
+                hftbacktest::types::Side::None | hftbacktest::types::Side::Unsupported => {}
+            }
+        }
+        (buys + sells, buys, sells)
     }
 
     pub fn best_bid(&self) -> Option<(f64, f64)> {
@@ -253,7 +313,22 @@ impl AppState {
     }
 
     fn push_event(&mut self, event: String) {
+        self.last_error_key = None;
+        self.repeated_error_count = 0;
         push_bounded(&mut self.events, event, self.history_capacity);
+    }
+
+    fn push_or_increment_error(&mut self, message: String) {
+        if self.last_error_key.as_deref() == Some(message.as_str()) {
+            self.repeated_error_count += 1;
+            if let Some(last) = self.events.back_mut() {
+                *last = format!("{message} ×{}", self.repeated_error_count);
+            }
+            return;
+        }
+        self.last_error_key = Some(message.clone());
+        self.repeated_error_count = 1;
+        push_bounded(&mut self.events, message, self.history_capacity);
     }
 }
 

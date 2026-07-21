@@ -137,6 +137,19 @@ impl UserDataStream {
                 // position by using the last filled quantity and reconciling it with data from the
                 // ORDER_TRADE_UPDATE message.
             }
+            EventStream::AlgoUpdate(data) => {
+                // Conditional orders created outside this connector (for example in the Binance
+                // app) are account-wide events and do not belong in this process's order map.
+                // Position and balance changes caused by their execution arrive separately via
+                // ACCOUNT_UPDATE.
+                debug!(
+                    symbol = %data.order.symbol,
+                    client_algo_id = %data.order.client_algo_id,
+                    status = %data.order.status,
+                    reduce_only = data.order.reduce_only,
+                    "Ignoring an external Binance Futures algo-order update."
+                );
+            }
         }
         Ok(())
     }

@@ -1,6 +1,7 @@
 use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use serde::Deserialize;
 
+use super::algo_update::AlgoUpdate;
 use super::{from_str_to_side, from_str_to_status, from_str_to_tif, from_str_to_type};
 use crate::utils::{from_str_to_f64, from_str_to_f64_opt, to_lowercase};
 
@@ -30,6 +31,8 @@ pub enum EventStream {
     TradeLite(TradeLite),
     #[serde(rename = "ACCOUNT_UPDATE")]
     AccountUpdate(AccountUpdate),
+    #[serde(rename = "ALGO_UPDATE")]
+    AlgoUpdate(AlgoUpdate),
     #[serde(rename = "listenKeyExpired")]
     ListenKeyExpired(ListenKeyStream),
 }
@@ -288,4 +291,24 @@ pub struct ListenKeyStream {
     pub event_time: i64,
     #[serde(rename = "listenKey")]
     pub listen_key: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EventStream, Stream};
+
+    #[test]
+    fn parses_app_created_algo_order_update() {
+        let text = r#"{"e":"ALGO_UPDATE","T":1784594703228,"E":1784594703228,"o":{"caid":"ios_EqMaedWIAmQ6XFn9L4Tm","aid":1000002464741292,"at":"CONDITIONAL","o":"TAKE_PROFIT_MARKET","s":"SYNUSDT","S":"SELL","ps":"BOTH","f":"GTC","q":"100","X":"FINISHED","ai":"2333217725","ap":"0.2247","aq":"100","act":"MARKET","tp":"0.2248","p":"0","V":"NONE","wt":"CONTRACT_PRICE","pm":"NONE","cp":false,"pP":true,"R":true,"tt":1784594703223,"gtd":0}}"#;
+
+        let stream: Stream = serde_json::from_str(text).expect("ALGO_UPDATE should be supported");
+        let Stream::EventStream(EventStream::AlgoUpdate(update)) = stream else {
+            panic!("expected ALGO_UPDATE event");
+        };
+
+        assert_eq!(update.order.symbol, "synusdt");
+        assert_eq!(update.order.client_algo_id, "ios_EqMaedWIAmQ6XFn9L4Tm");
+        assert_eq!(update.order.status, "FINISHED");
+        assert!(update.order.reduce_only);
+    }
 }

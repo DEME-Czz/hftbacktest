@@ -1,7 +1,8 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use chrono::Local;
 use hftbacktest::types::{Side, Status};
-use hftbacktest_tui::{AppState, Health};
+use hftbacktest_tui::{AppState, Health, PositionDirection};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -28,17 +29,22 @@ pub fn draw(frame: &mut Frame, connector: &str, app: &AppState) {
         .split(rows[1]);
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(8)])
+        .constraints([Constraint::Length(9), Constraint::Min(8)])
         .split(columns[0]);
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(8)])
+        .constraints([
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Min(8),
+        ])
         .split(columns[1]);
 
     draw_market(frame, left[0], app);
     draw_depth_and_trades(frame, left[1], app);
     draw_position(frame, right[0], app);
-    draw_orders_and_events(frame, right[1], app);
+    draw_performance(frame, right[1], app);
+    draw_orders_and_events(frame, right[2], app);
     frame.render_widget(
         Paragraph::new("[p] Pause/Resume   [q] Quit   read-only: no order requests are sent")
             .style(Style::default().fg(Color::DarkGray)),
@@ -64,6 +70,7 @@ fn draw_header(frame: &mut Frame, area: Rect, connector: &str, app: &AppState) {
             format!("{health:?}{pause}"),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
+        Span::raw(format!(" · {}", Local::now().format("%H:%M:%S"))),
         Span::styled(" · READ ONLY ", Style::default().fg(Color::Cyan)),
     ]);
     frame.render_widget(
@@ -76,15 +83,28 @@ fn draw_market(frame: &mut Frame, area: Rect, app: &AppState) {
     let bid = format_level(app.best_bid());
     let ask = format_level(app.best_ask());
     let spread = match (app.best_bid(), app.best_ask()) {
-        (Some((bid, _)), Some((ask, _))) => format!("{:.8}", ask - bid),
+        (Some((bid, _)), Some((ask, _))) => format!(
+            "{:.8} / {}",
+            ask - bid,
+            app.spread_bps()
+                .map(|value| format!("{value:.2} bp"))
+                .unwrap_or_else(|| "unavailable".into())
+        ),
         _ => "unavailable".into(),
     };
+    let mid = app
+        .mid_price()
+        .map(|value| format!("{value:.8}"))
+        .unwrap_or_else(|| "unavailable".into());
     let feed_lag = app
         .last_feed_latency_ns()
         .map(format_ns)
         .unwrap_or_else(|| "unavailable".into());
-    let text =
-        format!("Best ask  {ask}\nSpread    {spread}\nBest bid  {bid}\nFeed lag  {feed_lag}");
+    let text = format!(
+        "Best ask    {ask}\nSpread      {spread}\nMid price   {mid}\nBest bid    {bid}\nFeed lag    {feed_lag}\nTick / lot  {} / {}",
+        app.tick_size(),
+        app.lot_size()
+    );
     frame.render_widget(
         Paragraph::new(text).block(Block::default().title(" Market ").borders(Borders::ALL)),
         area,
@@ -92,6 +112,12 @@ fn draw_market(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 fn draw_position(frame: &mut Frame, area: Rect, app: &AppState) {
+    let (direction, direction_color) = match app.position_direction() {
+        PositionDirection::Waiting => ("WAITING", Color::Yellow),
+        PositionDirection::Flat => ("FLAT", Color::Gray),
+        PositionDirection::Long => ("LONG", Color::Green),
+        PositionDirection::Short => ("SHORT", Color::Red),
+    };
     let position = app
         .position()
         .map(|v| format!("{v:+}"))
@@ -104,16 +130,63 @@ fn draw_position(frame: &mut Frame, area: Rect, app: &AppState) {
         .balance()
         .map(|value| format!("{value:.8}"))
         .unwrap_or_else(|| "unavailable".into());
+    let notional = app
+        .position_notional()
+        .map(|value| format!("{value:.4}"))
+        .unwrap_or_else(|| "unavailable".into());
+    let position_age = app
+        .position_age(Instant::now())
+        .map(format_age)
+        .unwrap_or_else(|| "unavailable".into());
+    let lines = vec![
+        Line::from(vec![
+            Span::raw("Direction       "),
+            Span::styled(
+                direction,
+                Style::default()
+                    .fg(direction_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(format!("Net quantity    {position}")),
+        Line::raw(format!("Notional @ mid  {notional}")),
+        Line::raw("Entry / mark     unavailable (protocol)"),
+        Line::raw("Liquidation      unavailable (protocol)"),
+        Line::raw(format!("Position age     {position_age}")),
+        Line::raw(format!("Order lag        {order_lag}")),
+        Line::raw(format!("Wallet           {balance}")),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .title(" Position & Risk ")
+                .borders(Borders::ALL),
+        ),
+        area,
+    );
+}
+
+fn draw_performance(frame: &mut Frame, area: Rect, app: &AppState) {
+    let wallet_change = app
+        .wallet_change()
+        .map(|value| format!("{value:+.8}"))
+        .unwrap_or_else(|| "unavailable".into());
+    let account_age = app
+        .balance_age(Instant::now())
+        .map(format_age)
+        .unwrap_or_else(|| "unavailable".into());
     let text = format!(
-        "Net qty       {position}\nWallet        {balance}\nFills/volume  {} / {:.4}\nFees          {:.8}\nOrder lag     {order_lag}\nTick / lot    {} / {}",
+        "Wallet change  {wallet_change}  (not PnL)\nRealized PnL   unavailable (protocol)\nUnrealized PnL unavailable (protocol)\nSession fees   -{:.8}\nFills / volume {} / {:.4}\nAccount age    {account_age}",
+        app.fees(),
         app.num_fills(),
         app.filled_volume(),
-        app.fees(),
-        app.tick_size(),
-        app.lot_size()
     );
     frame.render_widget(
-        Paragraph::new(text).block(Block::default().title(" Position ").borders(Borders::ALL)),
+        Paragraph::new(text).block(
+            Block::default()
+                .title(" Performance ")
+                .borders(Borders::ALL),
+        ),
         area,
     );
 }
@@ -207,7 +280,12 @@ fn draw_orders_and_events(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 fn draw_orders(frame: &mut Frame, area: Rect, app: &AppState) {
-    let mut orders = app.orders().values().collect::<Vec<_>>();
+    let (active, buys, sells) = app.active_order_counts();
+    let mut orders = app
+        .orders()
+        .values()
+        .filter(|order| order.active())
+        .collect::<Vec<_>>();
     orders.sort_by_key(|order| std::cmp::Reverse(order.local_timestamp));
     let rows = orders
         .into_iter()
@@ -237,7 +315,13 @@ fn draw_orders(frame: &mut Frame, area: Rect, app: &AppState) {
     frame.render_widget(
         Table::new(rows, widths)
             .header(Row::new(["ID", "Side", "Price", "Left/Qty", "Status"]))
-            .block(Block::default().title(" Orders ").borders(Borders::ALL)),
+            .block(
+                Block::default()
+                    .title(format!(
+                        " Active Orders {active} · Buy {buys} · Sell {sells} "
+                    ))
+                    .borders(Borders::ALL),
+            ),
         area,
     );
 }
@@ -258,6 +342,43 @@ fn format_ns(value: i64) -> String {
     }
 }
 
+fn format_age(value: Duration) -> String {
+    if value.as_secs() >= 60 {
+        format!("{}m {}s", value.as_secs() / 60, value.as_secs() % 60)
+    } else if value.as_secs() > 0 {
+        format!("{:.1}s", value.as_secs_f64())
+    } else {
+        format!("{}ms", value.as_millis())
+    }
+}
+
 fn status_name(status: Status) -> String {
     format!("{status:?}")
+}
+
+#[cfg(test)]
+mod tests {
+    use hftbacktest_tui::AppState;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::draw;
+
+    #[test]
+    fn overview_renders_at_recommended_terminal_size() {
+        render_at(120, 32);
+    }
+
+    #[test]
+    fn overview_degrades_without_panicking_on_small_terminal() {
+        render_at(80, 24);
+    }
+
+    fn render_at(width: u16, height: u16) {
+        let app = AppState::new("dogeusdt", 0.00001, 1.0, 100);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(frame, "binancefutures-prod", &app))
+            .unwrap();
+    }
 }
