@@ -26,6 +26,9 @@
 //! - `s3`: Enables accessing data file from S3.
 //!
 
+/// Provides order-book based alpha signal building blocks.
+pub mod alpha;
+
 /// Provides backtesting features.
 #[cfg(any(feature = "backtest", doc))]
 pub mod backtest;

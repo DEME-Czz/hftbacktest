@@ -25,6 +25,7 @@ use crate::{
             stream::{EventStream, Stream},
         },
         rest::BinanceFuturesClient,
+        subscriptions::SubscriptionTracker,
     },
     connector::PublishEvent,
     utils::{connect_websocket, generate_rand_string, parse_depth, parse_px_qty_tup},
@@ -34,6 +35,7 @@ pub struct MarketDataStream {
     client: BinanceFuturesClient,
     ev_tx: UnboundedSender<PublishEvent>,
     symbol_rx: Receiver<String>,
+    subscriptions: SubscriptionTracker,
     pending_depth_messages: HashMap<String, Vec<stream::Depth>>,
     prev_u: HashMap<String, i64>,
     rest_tx: UnboundedSender<(String, rest::Depth)>,
@@ -45,12 +47,14 @@ impl MarketDataStream {
         client: BinanceFuturesClient,
         ev_tx: UnboundedSender<PublishEvent>,
         symbol_rx: Receiver<String>,
+        initial_symbols: impl IntoIterator<Item = String>,
     ) -> Self {
         let (rest_tx, rest_rx) = unbounded_channel::<(String, rest::Depth)>();
         Self {
             client,
             ev_tx,
             symbol_rx,
+            subscriptions: SubscriptionTracker::new(initial_symbols),
             pending_depth_messages: Default::default(),
             prev_u: Default::default(),
             rest_tx,
@@ -264,6 +268,12 @@ impl MarketDataStream {
         let mut ping_checker = time::interval(Duration::from_secs(10));
         let mut last_ping = Instant::now();
 
+        while let Some(symbol) = self.subscriptions.next_initial() {
+            write
+                .send(Message::Text(subscription_request(&symbol).into()))
+                .await?;
+        }
+
         loop {
             select! {
                 Some((symbol, data)) = self.rest_rx.recv() => {
@@ -277,15 +287,11 @@ impl MarketDataStream {
                 }
                 msg = self.symbol_rx.recv() => match msg {
                     Ok(symbol) => {
-                        let id = generate_rand_string(16);
-                        write.send(Message::Text(format!(r#"{{
-                            "method": "SUBSCRIBE",
-                            "params": [
-                                "{symbol}@trade",
-                                "{symbol}@depth@100ms"
-                            ],
-                            "id": "{id}"
-                        }}"#).into())).await?;
+                        if self.subscriptions.accept(symbol.clone()) {
+                            write
+                                .send(Message::Text(subscription_request(&symbol).into()))
+                                .await?;
+                        }
                     }
                     Err(RecvError::Closed) => {
                         return Ok(());
@@ -330,4 +336,18 @@ impl MarketDataStream {
             }
         }
     }
+}
+
+fn subscription_request(symbol: &str) -> String {
+    let id = generate_rand_string(16);
+    format!(
+        r#"{{
+        "method": "SUBSCRIBE",
+        "params": [
+            "{symbol}@trade",
+            "{symbol}@depth@100ms"
+        ],
+        "id": "{id}"
+    }}"#
+    )
 }

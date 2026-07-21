@@ -3,6 +3,7 @@ mod market_data_stream;
 mod msg;
 mod ordermanager;
 mod rest;
+mod subscriptions;
 mod user_data_stream;
 
 use std::{
@@ -133,6 +134,7 @@ impl BinanceFutures {
         let base_url = self.config.market_stream_url().to_owned();
         let client = self.client.clone();
         let symbol_tx = self.symbol_tx.clone();
+        let symbols = self.symbols.clone();
 
         tokio::spawn(async move {
             let _ = Retry::new(ExponentialBackoff::default())
@@ -150,10 +152,16 @@ impl BinanceFutures {
                     Ok(())
                 })
                 .retry(|| async {
+                    // Subscribe before taking the snapshot so registrations racing with the
+                    // snapshot remain queued in the receiver. The stream deduplicates them.
+                    let symbol_rx = symbol_tx.subscribe();
+                    let initial_symbols =
+                        symbols.lock().unwrap().iter().cloned().collect::<Vec<_>>();
                     let mut stream = market_data_stream::MarketDataStream::new(
                         client.clone(),
                         ev_tx.clone(),
-                        symbol_tx.subscribe(),
+                        symbol_rx,
+                        initial_symbols,
                     );
                     debug!("Connecting to the market data stream...");
                     stream.connect(&base_url).await?;

@@ -20,6 +20,41 @@ where
     R: Recorder,
     <R as Recorder>::Error: Debug,
 {
+    gridtrading_with_alpha(
+        hbt,
+        recorder,
+        |_| 0.0,
+        relative_half_spread,
+        relative_grid_interval,
+        grid_num,
+        min_grid_step,
+        skew,
+        order_qty,
+        max_position,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn gridtrading_with_alpha<MD, I, R, A>(
+    hbt: &mut I,
+    recorder: &mut R,
+    mut alpha_provider: A,
+    relative_half_spread: f64,
+    relative_grid_interval: f64,
+    grid_num: usize,
+    min_grid_step: f64,
+    skew: f64,
+    order_qty: f64,
+    max_position: f64,
+) -> Result<(), i64>
+where
+    MD: MarketDepth,
+    I: Bot<MD>,
+    <I as Bot<MD>>::Error: Debug,
+    R: Recorder,
+    <R as Recorder>::Error: Debug,
+    A: FnMut(&MD) -> f64,
+{
     let tick_size = hbt.depth(0).tick_size() as f64;
     // min_grid_step should be in multiples of tick_size.
     let min_grid_step = (min_grid_step / tick_size).round() * tick_size;
@@ -46,7 +81,8 @@ where
 
         let relative_bid_depth = relative_half_spread + skew * normalized_position;
         let relative_ask_depth = relative_half_spread - skew * normalized_position;
-        let alpha = 0.0;
+        let alpha = alpha_provider(depth);
+        let alpha = if alpha.is_finite() { alpha } else { 0.0 };
         let forecast_mid_price = mid_price + alpha;
 
         let bid_price =
