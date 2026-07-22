@@ -1,4 +1,4 @@
-use std::{fs::File, io::BufReader, path::PathBuf};
+use std::{fs::File, io::BufReader};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -6,35 +6,30 @@ use hftbacktest::alpha::{LabelConfig, TrainingConfig, load_csv_records, train_li
 
 #[derive(Parser)]
 struct Args {
-    #[arg(long, default_value = "data/doge_alpha_20260721.csv")]
-    input: PathBuf,
-    #[arg(long, default_value = "data/doge_alpha_20260721.model.json")]
-    output: PathBuf,
-    #[arg(long, default_value_t = 50)]
-    horizon: usize,
-    #[arg(long, default_value_t = 0.0002)]
-    threshold: f64,
-    #[arg(long, default_value_t = 0.8)]
-    train_ratio: f64,
-    #[arg(long, default_value_t = 100)]
-    epochs: usize,
-    #[arg(long, default_value_t = 0.05)]
-    learning_rate: f32,
-    #[arg(long, default_value_t = 0.0001)]
-    l2: f32,
+    /// TOML containing every training parameter.
+    config: String,
 }
+
+#[path = "support/train_alpha_config.rs"]
+mod train_alpha_config;
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    let config = train_alpha_config::TrainAlphaConfig::load(&args.config)?;
     let records = load_csv_records(BufReader::new(
-        File::open(&args.input).with_context(|| format!("open {}", args.input.display()))?,
+        File::open(&config.input).with_context(|| format!("open {}", config.input.display()))?,
     ))?;
-    let labels = LabelConfig::new(args.horizon, args.threshold)?;
-    let training = TrainingConfig::new(args.train_ratio, args.epochs, args.learning_rate, args.l2)?;
+    let labels = LabelConfig::new(config.horizon, config.threshold)?;
+    let training = TrainingConfig::new(
+        config.train_ratio,
+        config.epochs,
+        config.learning_rate,
+        config.l2,
+    )?;
     let (model, report) = train_linear_model(&records, labels, training)?;
 
-    std::fs::write(&args.output, model.to_json()?)
-        .with_context(|| format!("write {}", args.output.display()))?;
+    std::fs::write(&config.output, model.to_json()?)
+        .with_context(|| format!("write {}", config.output.display()))?;
     println!(
         "records={} train={} validation={}",
         report.records, report.train_samples, report.validation_samples
@@ -52,6 +47,6 @@ fn main() -> Result<()> {
         report.confusion
     );
     println!("validation_accuracy={:.4}", report.validation_accuracy);
-    println!("model={}", args.output.display());
+    println!("model={}", config.output.display());
     Ok(())
 }

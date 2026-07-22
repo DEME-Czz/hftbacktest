@@ -1,3 +1,4 @@
+mod config;
 mod ui;
 
 use std::{
@@ -7,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use config::TuiConfig;
 use crossterm::{
     event::{self, Event as TerminalEvent, KeyCode, KeyEventKind},
     execute,
@@ -22,16 +24,8 @@ use ratatui::{Terminal, backend::CrosstermBackend};
     about = "Read-only live monitor for HftBacktest connectors"
 )]
 struct Args {
-    /// Connector IPC name, for example binancefutures-prod.
-    name: String,
-    #[arg(long)]
-    symbol: String,
-    #[arg(long)]
-    tick_size: f64,
-    #[arg(long)]
-    lot_size: f64,
-    #[arg(long, default_value_t = 500)]
-    history_capacity: usize,
+    /// Path to the TOML file containing every TUI parameter.
+    config: String,
 }
 
 struct TerminalGuard {
@@ -62,22 +56,18 @@ impl Drop for TerminalGuard {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    anyhow::ensure!(
-        args.tick_size > 0.0,
-        "--tick-size must be greater than zero"
-    );
-    anyhow::ensure!(args.lot_size > 0.0, "--lot-size must be greater than zero");
+    let config = TuiConfig::load(&args.config)?;
 
     // This creates only a ToBot subscriber. It never opens FromBot and therefore cannot submit a
     // RegisterInstrument or Order request.
-    let receiver = IceoryxBuilder::new(&args.name)
+    let receiver = IceoryxBuilder::new(&config.connector_name)
         .receiver::<LiveEvent>()
         .context("failed to subscribe to connector IPC; start the connector first")?;
     let mut app = AppState::new(
-        &args.symbol,
-        args.tick_size,
-        args.lot_size,
-        args.history_capacity,
+        &config.symbol,
+        config.tick_size,
+        config.lot_size,
+        config.history_capacity,
     );
     let mut terminal = TerminalGuard::enter()?;
 
@@ -91,9 +81,9 @@ fn main() -> Result<()> {
         }
         terminal
             .terminal
-            .draw(|frame| ui::draw(frame, &args.name, &app))?;
+            .draw(|frame| ui::draw(frame, &config.connector_name, &app))?;
 
-        if event::poll(Duration::from_millis(50))?
+        if event::poll(Duration::from_millis(config.poll_interval_ms))?
             && let TerminalEvent::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {

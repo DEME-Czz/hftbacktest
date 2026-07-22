@@ -1,16 +1,10 @@
-use std::{
-    env,
-    fs::{File, OpenOptions},
-    io::BufWriter,
-};
+use std::{fs::File, io::BufWriter};
 
 use anyhow::{Context, Result};
 use hftbacktest::{
     alpha::{CsvDatasetWriter, LobRecord},
     depth::HashMapMarketDepth,
 };
-
-const DATASET_PATH_ENV: &str = "HFT_ALPHA_DATASET_PATH";
 
 pub struct OptionalDatasetRecorder {
     writer: Option<CsvDatasetWriter<BufWriter<File>>>,
@@ -25,22 +19,16 @@ pub enum RecordStatus {
 }
 
 impl OptionalDatasetRecorder {
-    pub fn from_env() -> Result<Self> {
-        let Some(path) = env::var_os(DATASET_PATH_ENV) else {
+    pub fn from_path(path: Option<&std::path::Path>) -> Result<Self> {
+        let Some(path) = path else {
             return Ok(Self { writer: None });
         };
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .with_context(|| {
-                format!(
-                    "failed to create Alpha dataset at {}; choose a new path because existing files are never overwritten",
-                    path.to_string_lossy()
-                )
-            })?;
-        let writer = CsvDatasetWriter::new(BufWriter::new(file))
-            .context("failed to initialize Alpha dataset CSV")?;
+        let writer = CsvDatasetWriter::open_append(path).with_context(|| {
+            format!(
+                "failed to open Alpha dataset for append at {}",
+                path.display()
+            )
+        })?;
         Ok(Self {
             writer: Some(writer),
         })

@@ -1,0 +1,16 @@
+# 原始行情文件的输出目录。目录不存在时自动创建；文件按币种和 UTC 日期轮转。
+output_path = "data/market"
+
+# 交易所类型。可选：binance、binancefutures、binancefuturescm、bybit、hyperliquid。
+exchange = "binancefutures"
+
+# 采集币种。币安使用小写；同一进程可以配置多个币种。
+symbols = ["dogeusdt"]
+
+# 公开 WebSocket 订阅模板，$symbol 会替换成上面的每个币种。
+# trade=逐笔成交，bookTicker=最优买卖价，depth@100ms=100ms 增量深度。
+streams = ["$symbol@trade", "$symbol@bookTicker", "$symbol@depth@100ms"]
+
+# 可选 HTTP CONNECT 代理。直连币安可用时删除或注释本行。
+# FlClash 默认混合代理端口通常为 127.0.0.1:7890。
+proxy = "127.0.0.1:7890"

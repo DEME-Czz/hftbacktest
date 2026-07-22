@@ -20,7 +20,7 @@ impl RotatingFile {
         let date = datetime.date_naive().format("%Y%m%d");
         let file = File::options()
             .create(true)
-            .write(true)
+            .append(true)
             .open(format!("{path}_{date}.gz"))?;
         Ok(GzEncoder::new(file, Compression::default()))
     }

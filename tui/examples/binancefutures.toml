@@ -1,0 +1,17 @@
+# Connector 的 IPC 实例名，必须与 Connector 配置中的 name 完全一致。
+connector_name = "binancefutures-prod"
+
+# TUI 展示的币种。币安 Connector 内部使用小写币种名。
+symbol = "dogeusdt"
+
+# 最小价格变动单位，必须与交易所 PRICE_FILTER.tickSize 一致。
+tick_size = 0.00001
+
+# 最小数量变动单位，必须与交易所 LOT_SIZE.stepSize 一致。
+lot_size = 1.0
+
+# TUI 内存中保留的历史采样点数量；越大占用内存越多。
+history_capacity = 500
+
+# 终端刷新和键盘轮询间隔，单位毫秒；数值越小刷新越频繁。
+poll_interval_ms = 50

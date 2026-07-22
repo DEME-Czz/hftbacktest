@@ -32,24 +32,22 @@ Supported connectors include:
 
 3. Configure an exchange settings file. See the [`connector/examples`](examples) directory. Do not commit API credentials. Use an API key restricted to the required trading permissions, with withdrawals disabled and an IP allowlist where possible.
 
-4. Run Connector. The CLI uses three positional arguments, in this order:
+4. Run Connector. Every runtime parameter is stored in one TOML file; the CLI accepts only its path:
 
     ```
-    connector <NAME> <CONNECTOR> <CONFIG>
+    connector <CONFIG>
     ```
 
-   `NAME` is the local IPC channel name and must exactly match the connector name registered by the live bot. It is not the connector type.
+   The TOML fields `name` and `connector` select the local IPC instance and connector implementation.
 
    Example:
 
     ```bash
     ./target/release/connector \
-        binancefutures-demo \
-        binancefutures \
         connector/examples/binancefutures-demo.toml
     ```
 
-   Options such as `--name`, `--connector`, and `--config` are not accepted by the current CLI.
+   Other exchange URLs, credentials, and order prefixes remain in that same file.
 
 Note: Since Connector communicates with bots via shared memory, both Connector and the bots must run on the same machine.
 
@@ -99,17 +97,14 @@ enabling production trading. Binance symbols are lowercase inside the bot (`doge
     cargo build --release --package connector
     ```
 
-3. Start the connector first. If Binance must be reached through an HTTP proxy, set `HTTPS_PROXY`; the REST client and both WebSocket streams use it. `HTTP_PROXY` and `ALL_PROXY` may also be set for consistency:
+3. Start the connector first. Binance Futures defaults to the HTTP CONNECT proxy
+   `http://127.0.0.1:7890`; REST and both WebSocket streams share `proxy_url` from the TOML file.
+   Set `proxy_url = ""` only when direct access is required:
 
     ```bash
     ulimit -n 4096
-    HTTPS_PROXY=http://127.0.0.1:7890 \
-    HTTP_PROXY=http://127.0.0.1:7890 \
-    ALL_PROXY=http://127.0.0.1:7890 \
     RUST_LOG=info \
     ./target/release/connector \
-        binancefutures-demo \
-        binancefutures \
         connector/examples/binancefutures-demo.toml
     ```
 
@@ -120,6 +115,16 @@ do not use it with this Demo connector without first changing its connector name
 
 The live grid example trades `DOGEUSDT` through the IPC name `binancefutures-prod`. The `NAME` in
 the connector command and the name in `gridtrading_live.rs` must match exactly.
+
+The connector configuration does not define the instruments to trade. A top-level
+`symbols = [...]` entry in a connector TOML file is currently ignored: `RuntimeConfig` reads only
+`name` and `connector`, while the Binance Futures connector reads its endpoint, proxy, credential,
+and order-prefix fields. Instruments are registered at runtime by each bot or TUI through IPC. For
+example, `gridtrading_live` reads `symbol` from
+`hftbacktest/examples/gridtrading-live.toml`. Consequently, it is normal for the connector's first
+account-snapshot log to show `symbols={}` when its private stream connects before a bot registers.
+After `RegisterInstrument` is received, the connector logs another account snapshot containing the
+newly registered symbol.
 
 1. Copy the production template and enter a production API key and secret:
 
@@ -145,8 +150,6 @@ the connector command and the name in `gridtrading_live.rs` must match exactly.
     RUST_LOG=info \
     RUST_BACKTRACE=1 \
     ./target/release/connector \
-        binancefutures-prod \
-        binancefutures \
         connector/examples/binancefutures-prod.toml
     ```
 
@@ -156,10 +159,11 @@ the connector command and the name in `gridtrading_live.rs` must match exactly.
     ```bash
     RUST_LOG=info \
     RUST_BACKTRACE=1 \
-    ./target/release/examples/gridtrading_live
+    ./target/release/examples/gridtrading_live \
+        hftbacktest/examples/gridtrading-live.toml
     ```
 
-The DOGE example uses a price tick of `0.00001`, a quantity step of `1`, and an order quantity of `100`. Before changing the symbol, update the symbol, tick size, lot size, minimum grid step, and order quantity in `hftbacktest/examples/gridtrading_live.rs` from that symbol's current exchange filters. Every non-reduce-only order must also satisfy Binance's minimum notional.
+The live strategy parameters are documented field-by-field in `hftbacktest/examples/gridtrading-live.toml`. Before changing the symbol, update its tick size, lot size, minimum grid step, order quantity, position limit, dataset, and model paths. Every non-reduce-only order must also satisfy Binance's minimum notional.
 Before placing orders, the example waits up to 30 seconds for both sides of the market depth and a
 received, finite quote-asset wallet balance. Zero position and zero balance are valid synchronized
 states. On timeout, the error includes `account_ready`, `best_bid_tick`, and `best_ask_tick`, so an
@@ -167,9 +171,11 @@ account-stream failure can be distinguished from a market-stream failure.
 
 ### Current account-state behavior
 
-- At startup, the Binance Futures connector fetches quote-asset wallet balances and active
-  positions from `/fapi/v3/account`; configured symbols omitted by Binance are initialized with zero
-  position.
+- When the private stream connects, the Binance Futures connector fetches quote-asset wallet
+  balances and active positions from `/fapi/v3/account`. This first request can run with an empty
+  symbol set because instruments are registered by bots rather than the connector TOML.
+- Whenever a bot registers a symbol, the connector fetches the account snapshot again for that
+  symbol. Registered symbols omitted by Binance are initialized with zero position.
 - Subsequent wallet-balance and position changes are taken from `ACCOUNT_UPDATE` messages.
 - `StateValues.balance` is the wallet balance of the symbol's quote asset (for example, USDT for
   DOGEUSDT). Fees, trade count, volume, and value are accumulated from this bot's unique Binance
@@ -184,6 +190,17 @@ account-stream failure can be distinguished from a market-stream failure.
 - `LiveBot::close()` currently performs no exchange cleanup. Stopping the strategy does not guarantee that open orders are canceled or that positions are flattened.
 - Verify the account mode, margin mode, leverage, price/quantity filters, minimum notional, and available margin before enabling real trading.
 - Use a new IPC `NAME` if a previous abnormal termination left unusable shared-memory state.
+
+### Troubleshooting HTTP 418
+
+An HTTP `418` response from `/fapi/v3/account` is independent of whether the log shows an empty
+symbol set: that endpoint is account-wide and the connector does not send `symbols` in the REST
+request. Binance uses HTTP 418 for an automatically banned source IP after repeated rate-limit
+violations. Stop all connector/strategy instances using the same direct or proxy egress IP, do not
+retry until Binance's `Retry-After` period has elapsed, and check whether other programs share the
+same proxy. Restarting the connector during the ban only creates more failed requests. The official
+rate-limit guidance is documented at
+<https://developers.binance.com/en/docs/products/spot/rest-api#http-return-codes>.
 
 ## Connector Implementation Guide
 

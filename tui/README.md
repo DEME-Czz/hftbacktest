@@ -35,11 +35,7 @@ cargo build --release --package hftbacktest-tui
 生产 Connector 启动后运行：
 
 ```bash
-./target/release/hftbacktest-tui \
-    binancefutures-prod \
-    --symbol dogeusdt \
-    --tick-size 0.00001 \
-    --lot-size 1
+./target/release/hftbacktest-tui tui/examples/binancefutures.toml
 ```
 
 其中：

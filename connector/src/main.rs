@@ -45,6 +45,7 @@ pub mod binancespot;
 pub mod bybit;
 
 mod connector;
+mod runtime_config;
 //mod fuse;
 mod utils;
 
@@ -358,15 +359,7 @@ fn handle_ev(
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Name of the connector, used when connecting the bot to the connector.
-    name: String,
-
-    /// Connector
-    /// * binancefutures: Binance USD-m Futures
-    /// * bybit: Bybit Linear Futures
-    connector: String,
-
-    /// Connector's configuration file path.
+    /// TOML containing the IPC name, connector type, and all exchange parameters.
     config: String,
 }
 
@@ -418,8 +411,11 @@ async fn main() {
             );
         })
         .unwrap();
+    let runtime = runtime_config::RuntimeConfig::parse(&config)
+        .map_err(|error| error!(?error, "Invalid connector runtime configuration."))
+        .unwrap();
 
-    let mut connector: Box<dyn Connector> = match args.connector.as_str() {
+    let mut connector: Box<dyn Connector> = match runtime.connector.as_str() {
         "binancefutures" => {
             let mut connector = BinanceFutures::build_from(&config)
                 .map_err(|error| {
@@ -453,7 +449,7 @@ async fn main() {
         }
     };
 
-    let name = args.name.clone();
+    let name = runtime.name.clone();
     let order_manager = connector.order_manager();
     // iceoryx2 0.6.1 can fail when multiple nodes create its runtime directories
     // concurrently. Wait until the publish thread has initialized its IPC resources
@@ -488,7 +484,7 @@ async fn main() {
     });
 
     ipc_ready_rx.recv().unwrap();
-    let name = args.name;
+    let name = runtime.name;
     run_receive_task(&name, pub_tx, &mut connector)
         .map_err(|error| {
             error!(

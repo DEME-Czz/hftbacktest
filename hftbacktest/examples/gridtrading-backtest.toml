@@ -1,0 +1,32 @@
+# 本次回测名称，用作结果文件名前缀。
+name = "dogeusdt-grid"
+# 回测统计 CSV 的输出目录。
+output_path = "data/backtest-output"
+# 按时间顺序读取的行情数据文件列表。
+data_files = ["data/doge.npz"]
+# 初始订单簿快照；不使用时删除或注释本行。
+initial_snapshot = "data/doge-snapshot.npz"
+# 订单延迟数据文件列表，按时间顺序读取。
+latency_files = ["data/doge-latency.npz"]
+# 最小价格变动单位。
+tick_size = 0.00001
+# 最小数量变动单位。
+lot_size = 1.0
+# 中间价到第一层报价的相对半价差。
+relative_half_spread = 0.001
+# 相邻网格层的相对价格间距。
+relative_grid_interval = 0.001
+# 持仓报价偏移系数。
+skew = 0.0001
+# 单边网格层数。
+grid_num = 10
+# 最小网格价格间距；不指定时删除本行，将使用 tick_size。
+min_grid_step = 0.00001
+# 每张订单数量。
+order_qty = 100.0
+# 允许的绝对最大持仓数量。
+max_position = 1000.0
+# Maker 手续费率；负值表示返佣。
+maker_fee = -0.00005
+# Taker 手续费率。
+taker_fee = 0.0007

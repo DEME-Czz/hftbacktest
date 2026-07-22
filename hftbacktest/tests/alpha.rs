@@ -1,4 +1,9 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    fs,
+    io::Cursor,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use hftbacktest::{
     alpha::{
@@ -9,8 +14,6 @@ use hftbacktest::{
     },
     depth::{HashMapMarketDepth, L2MarketDepth, MarketDepth},
 };
-use std::io::Cursor;
-
 #[derive(Default)]
 struct TestDepth {
     bids: HashMap<i64, f64>,
@@ -185,6 +188,49 @@ fn csv_writer_emits_a_stable_header_and_ignores_duplicate_book_states() {
     assert_eq!(rows[1].split(',').count(), 42);
     assert!(rows[0].starts_with("exchange_timestamp,mid_price,ask_price_1,ask_qty_1"));
     assert!(rows[1].starts_with("123000000,1.005"));
+}
+
+#[test]
+fn csv_writer_appends_to_an_existing_dataset_without_repeating_the_header() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("hft-alpha-append-{unique}.csv"));
+    let existing = "exchange_timestamp,mid_price,ask_price_1\nold-row\n";
+    fs::write(&path, existing).unwrap();
+
+    let depth = TestDepth::ten_levels();
+    let record = LobRecord::from_depth(123_000_000, &depth).unwrap();
+    let mut writer = CsvDatasetWriter::open_append(&path).unwrap();
+    assert!(writer.write(&record).unwrap());
+    writer.flush().unwrap();
+    drop(writer);
+
+    let csv = fs::read_to_string(&path).unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(csv.starts_with(existing));
+    assert_eq!(csv.matches("exchange_timestamp").count(), 1);
+    assert!(csv.contains("123000000,1.005"));
+}
+
+#[test]
+fn csv_writer_writes_the_header_when_appending_to_an_empty_file() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("hft-alpha-empty-{unique}.csv"));
+    fs::write(&path, []).unwrap();
+
+    let writer = CsvDatasetWriter::open_append(&path).unwrap();
+    drop(writer);
+
+    let csv = fs::read_to_string(&path).unwrap();
+    fs::remove_file(path).unwrap();
+    assert_eq!(csv.lines().count(), 1);
+    assert_eq!(csv.split(',').count(), 42);
+    assert!(csv.starts_with("exchange_timestamp,mid_price"));
 }
 
 fn records_with_mid_prices(prices: impl IntoIterator<Item = f64>) -> Vec<LobRecord> {

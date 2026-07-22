@@ -1,5 +1,24 @@
 # HftBacktest
 
+## Runtime configuration
+
+Executable examples that accept runtime parameters now read a single documented TOML file:
+
+```bash
+# Production live strategy; this can place real orders.
+./target/release/examples/gridtrading_live hftbacktest/examples/gridtrading-live.toml
+
+# Train the three-class Alpha model.
+./target/release/examples/train_alpha hftbacktest/examples/train-alpha.toml
+
+# Run the parameterized grid backtest.
+./target/release/examples/gridtrading_backtest_args hftbacktest/examples/gridtrading-backtest.toml
+```
+
+Review every field in the selected file before starting it. The live strategy config contains
+exchange precision, order size, inventory limit, Alpha model, and dataset paths; changing only the
+symbol is not sufficient.
+
 ![crates.io](https://img.shields.io/crates/v/hftbacktest.svg)
 
 **This project is currently in its initial development stages, meaning that breaking changes may occur without prior

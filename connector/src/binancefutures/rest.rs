@@ -27,11 +27,21 @@ pub struct BinanceFuturesClient {
 }
 
 impl BinanceFuturesClient {
-    pub fn new(url: &str, api_key: &str, secret: &str) -> Result<Self, reqwest::Error> {
-        let client = reqwest::Client::builder()
+    pub fn new(
+        url: &str,
+        api_key: &str,
+        secret: &str,
+        proxy_url: Option<&str>,
+    ) -> Result<Self, reqwest::Error> {
+        let mut client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(15))
-            .build()?;
+            .timeout(Duration::from_secs(15));
+        if let Some(proxy_url) = proxy_url {
+            client = client.proxy(reqwest::Proxy::all(proxy_url)?);
+        } else {
+            client = client.no_proxy();
+        }
+        let client = client.build()?;
         Ok(Self {
             client,
             url: url.to_string(),
@@ -183,12 +193,27 @@ impl BinanceFuturesClient {
     }
 
     pub async fn start_user_data_stream(&self) -> Result<String, reqwest::Error> {
-        let resp: Result<ListenKey, _> = self.post("/fapi/v1/listenKey", String::new()).await;
-        resp.map(|v| v.listen_key)
+        let resp: ListenKey = self
+            .client
+            .post(format!("{}/fapi/v1/listenKey", self.url))
+            .header("Accept", "application/json")
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(resp.listen_key)
     }
 
     pub async fn keepalive_user_data_stream(&self) -> Result<(), reqwest::Error> {
-        let _: serde_json::Value = self.put("/fapi/v1/listenKey", String::new()).await?;
+        self.client
+            .put(format!("{}/fapi/v1/listenKey", self.url))
+            .header("Accept", "application/json")
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
@@ -381,5 +406,81 @@ impl BinanceFuturesClient {
             .get_noauth("/fapi/v1/depth", format!("symbol={symbol}&limit=1000"))
             .await?;
         Ok(resp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BinanceFuturesClient;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    fn serve_once(status: &str, body: &str) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("read test server address");
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept test request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).expect("read test request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(response.as_bytes())
+                .expect("write test response");
+            String::from_utf8(request).expect("request is UTF-8")
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[tokio::test]
+    async fn listen_key_preserves_http_error_status() {
+        let (url, server) = serve_once(
+            "418 I'm a teapot",
+            r#"{"code":-1003,"msg":"Way too much request weight used; IP banned."}"#,
+        );
+        let client =
+            BinanceFuturesClient::new(&url, "api-key", "secret", None).expect("build REST client");
+
+        let error = client
+            .start_user_data_stream()
+            .await
+            .expect_err("HTTP 418 must fail before JSON decoding");
+
+        assert_eq!(error.status().map(|status| status.as_u16()), Some(418));
+        server.join().expect("join test server");
+    }
+
+    #[tokio::test]
+    async fn listen_key_uses_api_key_auth_without_signature() {
+        let (url, server) = serve_once("200 OK", r#"{"listenKey":"test-listen-key"}"#);
+        let client =
+            BinanceFuturesClient::new(&url, "api-key", "secret", None).expect("build REST client");
+
+        let listen_key = client
+            .start_user_data_stream()
+            .await
+            .expect("parse listen key");
+        let request = server.join().expect("join test server");
+
+        assert_eq!(listen_key, "test-listen-key");
+        assert!(request.starts_with("POST /fapi/v1/listenKey HTTP/1.1\r\n"));
+        assert!(request.contains("x-mbx-apikey: api-key\r\n"));
+        assert!(!request.contains("timestamp="));
+        assert!(!request.contains("signature="));
     }
 }

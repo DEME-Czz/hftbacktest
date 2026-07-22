@@ -1,3 +1,7 @@
+# 本地 IPC 实例名；策略和 TUI 必须使用相同名称。
+name = "bybit-testnet"
+# Connector 实现类型；Bybit 固定为 bybit。
+connector = "bybit"
 # Mainnet:
 #  - Linear: wss://stream.bybit.com/v5/public/linear
 # Testnet:
@@ -17,8 +21,12 @@ trade_url = "wss://stream-testnet.bybit.com/v5/trade"
 rest_url = "https://api-testnet.bybit.com"
 
 # Linear
+# 产品类别；USDT 永续合约使用 linear。
 category = "linear"
 
+# 客户端订单号前缀。
 order_prefix = ""
+# Testnet API Key；不要提交真实值。
 api_key = ""
+# Testnet API Secret；不要提交真实值。
 secret = ""

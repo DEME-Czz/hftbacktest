@@ -1,4 +1,8 @@
-use std::io::{self, Write};
+use std::{
+    fs::{File, OpenOptions},
+    io::{self, BufWriter, Write},
+    path::Path,
+};
 
 use super::{FEATURE_COUNT, LobRecord, LobSnapshot};
 
@@ -8,15 +12,21 @@ pub struct CsvDatasetWriter<W> {
 }
 
 impl<W: Write> CsvDatasetWriter<W> {
-    pub fn new(mut writer: W) -> io::Result<Self> {
-        writer.write_all(b"exchange_timestamp,mid_price")?;
-        for level in 1..=FEATURE_COUNT / 4 {
-            write!(
-                writer,
-                ",ask_price_{level},ask_qty_{level},bid_price_{level},bid_qty_{level}"
-            )?;
+    pub fn new(writer: W) -> io::Result<Self> {
+        Self::initialize(writer, true)
+    }
+
+    fn initialize(mut writer: W, write_header: bool) -> io::Result<Self> {
+        if write_header {
+            writer.write_all(b"exchange_timestamp,mid_price")?;
+            for level in 1..=FEATURE_COUNT / 4 {
+                write!(
+                    writer,
+                    ",ask_price_{level},ask_qty_{level},bid_price_{level},bid_qty_{level}"
+                )?;
+            }
+            writer.write_all(b"\n")?;
         }
-        writer.write_all(b"\n")?;
         Ok(Self {
             writer,
             latest_snapshot: None,
@@ -49,5 +59,17 @@ impl<W: Write> CsvDatasetWriter<W> {
 
     pub fn into_inner(self) -> W {
         self.writer
+    }
+}
+
+impl CsvDatasetWriter<BufWriter<File>> {
+    /// Opens a dataset for append, writing the CSV header only for a new or empty file.
+    pub fn open_append(path: impl AsRef<Path>) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path.as_ref())?;
+        let write_header = file.metadata()?.len() == 0;
+        Self::initialize(BufWriter::new(file), write_header)
     }
 }

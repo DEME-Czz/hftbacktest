@@ -30,6 +30,12 @@ use crate::{
     utils::{ExponentialBackoff, Retry},
 };
 
+const DEFAULT_PROXY_URL: &str = "http://127.0.0.1:7890";
+
+fn default_proxy_url() -> String {
+    DEFAULT_PROXY_URL.to_string()
+}
+
 #[derive(Error, Debug)]
 pub enum BinanceFuturesError {
     #[error("InstrumentNotFound")]
@@ -98,6 +104,10 @@ pub struct Config {
     #[serde(default)]
     user_stream_url: Option<String>,
     api_url: String,
+    /// HTTP CONNECT proxy shared by REST and both WebSocket streams.
+    /// An empty string explicitly disables proxying.
+    #[serde(default = "default_proxy_url")]
+    proxy_url: String,
     #[serde(default)]
     order_prefix: String,
     #[serde(default)]
@@ -116,6 +126,11 @@ impl Config {
     fn user_stream_url(&self) -> &str {
         self.user_stream_url.as_deref().unwrap_or(&self.stream_url)
     }
+
+    fn proxy_url(&self) -> Option<&str> {
+        let proxy_url = self.proxy_url.trim();
+        (!proxy_url.is_empty()).then_some(proxy_url)
+    }
 }
 
 type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
@@ -132,6 +147,7 @@ pub struct BinanceFutures {
 impl BinanceFutures {
     pub fn connect_market_data_stream(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
         let base_url = self.config.market_stream_url().to_owned();
+        let proxy_url = self.config.proxy_url().map(str::to_owned);
         let client = self.client.clone();
         let symbol_tx = self.symbol_tx.clone();
         let symbols = self.symbols.clone();
@@ -164,7 +180,7 @@ impl BinanceFutures {
                         initial_symbols,
                     );
                     debug!("Connecting to the market data stream...");
-                    stream.connect(&base_url).await?;
+                    stream.connect(&base_url, proxy_url.as_deref()).await?;
                     debug!("The market data stream connection is permanently closed.");
                     Ok(())
                 })
@@ -174,6 +190,7 @@ impl BinanceFutures {
 
     pub fn connect_user_data_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
         let base_url = self.config.user_stream_url().to_owned();
+        let proxy_url = self.config.proxy_url().map(str::to_owned);
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         let instruments = self.symbols.clone();
@@ -207,7 +224,9 @@ impl BinanceFutures {
                     let listen_key = stream.get_listen_key().await?;
 
                     debug!("Connecting to the user data stream...");
-                    stream.connect(&format!("{base_url}/{listen_key}")).await?;
+                    stream
+                        .connect(&format!("{base_url}/{listen_key}"), proxy_url.as_deref())
+                        .await?;
                     debug!("The user data stream connection is permanently closed.");
                     Ok(())
                 })
@@ -223,7 +242,12 @@ impl ConnectorBuilder for BinanceFutures {
         let config: Config = toml::from_str(config)?;
 
         let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
-        let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret)?;
+        let client = BinanceFuturesClient::new(
+            &config.api_url,
+            &config.api_key,
+            &config.secret,
+            config.proxy_url(),
+        )?;
         let (symbol_tx, _) = broadcast::channel(500);
 
         Ok(BinanceFutures {
@@ -393,5 +417,23 @@ impl Connector for BinanceFutures {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn uses_local_proxy_by_default() {
+        let config: Config = toml::from_str("api_url = 'https://fapi.binance.com'").unwrap();
+        assert_eq!(config.proxy_url(), Some("http://127.0.0.1:7890"));
+    }
+
+    #[test]
+    fn empty_proxy_disables_proxying() {
+        let config: Config =
+            toml::from_str("api_url = 'https://fapi.binance.com'\nproxy_url = ''").unwrap();
+        assert_eq!(config.proxy_url(), None);
     }
 }

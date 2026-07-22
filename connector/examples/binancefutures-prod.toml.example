@@ -1,9 +1,18 @@
 # Binance USD-M Futures production endpoints.
+# 本地 IPC 实例名；策略和 TUI 的 connector_name 必须与它一致。
+name = "binancefutures-prod"
+# Connector 实现类型；币安 U 本位合约固定为 binancefutures。
+connector = "binancefutures"
+# 注意：不要在此配置 symbols。币种由策略/TUI 通过 IPC 动态注册。
+
 # Public market subscriptions use the standard WebSocket Streams endpoint.
 market_stream_url = "wss://fstream.binance.com/ws"
 # Connector appends /<listenKey>, producing /private/ws/<listenKey>.
 user_stream_url = "wss://fstream.binance.com/private/ws"
 api_url = "https://fapi.binance.com"
+# REST、公共 WebSocket 和私有 WebSocket 共用的 HTTP CONNECT 代理。
+# 默认值为 http://127.0.0.1:7890；设置为空字符串可关闭代理。
+proxy_url = "http://127.0.0.1:7890"
 
 order_prefix = "prod"
 api_key = ""

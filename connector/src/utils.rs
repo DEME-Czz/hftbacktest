@@ -32,12 +32,10 @@ use crate::bybit::BybitError;
 
 pub async fn connect_websocket(
     request: impl IntoClientRequest,
+    configured_proxy: Option<&str>,
 ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, Response), tungstenite::Error> {
     let request = request.into_client_request()?;
-    let Some(proxy) = std::env::var("HTTPS_PROXY")
-        .or_else(|_| std::env::var("https_proxy"))
-        .ok()
-    else {
+    let Some(proxy) = configured_proxy else {
         return connect_async(request).await;
     };
 

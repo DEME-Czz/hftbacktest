@@ -1,0 +1,36 @@
+# Connector IPC 实例名，必须与 Connector 配置中的 name 完全一致。
+connector_name = "binancefutures-prod"
+# 交易币种；币安 Connector 使用小写。
+symbol = "dogeusdt"
+# 交易所最小价格单位 PRICE_FILTER.tickSize。
+tick_size = 0.00001
+# 交易所最小数量单位 LOT_SIZE.stepSize。
+lot_size = 1.0
+# 启动时等待账户余额和双边盘口完成初始化的最长秒数。
+startup_timeout_seconds = 30
+# Alpha CSV 追加路径；不采集时写 dataset_path = false 不合法，请改为注释并使用下方空值方案。
+dataset_path = "data/doge_alpha.csv"
+# 三分类模型路径；不启用模型时删除本行。
+model_path = "data/doge_alpha.model.json"
+# 中间价到第一层挂单的相对半价差，0.001 表示 0.1%。
+relative_half_spread = 0.001
+# 相邻网格层之间的相对价格间距。
+relative_grid_interval = 0.001
+# 单边网格层数；总活动订单可能接近该值的两倍。
+grid_num = 10
+# 最小网格价格间距，不能小于 tick_size。
+min_grid_step = 0.00001
+# 持仓对报价价格的偏移系数，值越大库存回归越激进。
+skew = 0.0001
+# 每张限价单数量，必须符合 lot_size 和交易所最小名义价值。
+order_qty = 100.0
+# 允许的绝对最大持仓数量，达到后停止同方向加仓。
+max_position = 1000.0
+# 三分类置信度阈值，范围 0 到 1；低于它按横盘处理。
+alpha_confidence_threshold = 0.90
+# 模型方向分数映射成报价偏移时使用的预期收益率。
+alpha_calibrated_return = 0.0002
+# Alpha 对报价施加的最大相对偏移。
+alpha_max_relative_offset = 0.0002
+# Alpha 信号指数平滑系数，范围 0 到 1；越大响应越快。
+alpha_smoothing = 0.25

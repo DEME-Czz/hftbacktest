@@ -1,9 +1,19 @@
+# 本地 IPC 实例名；策略和 TUI 必须使用相同名称。
+name = "binancespot-testnet"
+# Connector 实现类型；币安现货固定为 binancespot。
+connector = "binancespot"
 # Binance Spot Testnet market stream and WebSocket API.
+# 公开行情 WebSocket 地址。
 stream_url = "wss://stream.testnet.binance.vision/ws"
+# 下单使用的 WebSocket API 地址。
 ws_api_url = "wss://ws-api.testnet.binance.vision/ws-api/v3"
 # Binance Spot Testnet REST API.
+# REST API 基础地址。
 api_url = "https://testnet.binance.vision"
 
+# 客户端订单号前缀。
 order_prefix = "test"
+# Testnet API Key；不要提交真实值。
 api_key = ""
+# Testnet API Secret；不要提交真实值。
 secret = ""

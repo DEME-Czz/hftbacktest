@@ -1,8 +1,21 @@
 # Binance Futures Demo configuration without credentials.
 # Prefer binancefutures-demo.toml.example when creating a local credential file.
+# 本地 IPC 实例名；策略和 TUI 必须使用相同名称。
+name = "binancefutures-demo"
+# Connector 实现类型；U 本位合约固定为 binancefutures。
+connector = "binancefutures"
+# Demo 公共行情和用户数据流共用的 WebSocket 基础地址。
 stream_url = "wss://demo-fstream.binance.com/ws"
+# Demo REST API 基础地址。
 api_url = "https://demo-fapi.binance.com"
 
+# REST、公共 WebSocket 和私有 WebSocket 共用的 HTTP CONNECT 代理。
+# 默认值就是 http://127.0.0.1:7890；设置为空字符串可关闭代理。
+proxy_url = "http://127.0.0.1:7890"
+
+# 客户端订单号前缀；同一账户上的不同程序必须避免冲突。
 order_prefix = "test"
+# Demo API Key；空值只能获取公共行情，不能查询账户或交易。
 api_key = ""
+# Demo API Secret；不要提交真实值。
 secret = ""

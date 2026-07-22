@@ -1,4 +1,5 @@
 use algo::gridtrading_with_alpha;
+use clap::Parser;
 use std::time::Duration;
 
 use hftbacktest::{
@@ -13,17 +14,27 @@ use tracing::info;
 mod algo;
 #[path = "support/alpha_dataset.rs"]
 mod alpha_dataset;
+#[path = "support/grid_live_config.rs"]
+mod grid_live_config;
 #[path = "support/live_state.rs"]
 mod live_state;
 
-fn prepare_live() -> LiveBot<IceoryxUnifiedChannel, HashMapMarketDepth> {
+#[derive(Parser)]
+struct Args {
+    /// TOML containing every live strategy parameter.
+    config: String,
+}
+
+fn prepare_live(
+    config: &grid_live_config::GridLiveConfig,
+) -> LiveBot<IceoryxUnifiedChannel, HashMapMarketDepth> {
     LiveBotBuilder::new()
         .register(Instrument::new(
-            "binancefutures-prod",
-            "dogeusdt",
-            0.00001,
-            1.0,
-            HashMapMarketDepth::new(0.00001, 1.0),
+            &config.connector_name,
+            &config.symbol,
+            config.tick_size,
+            config.lot_size,
+            HashMapMarketDepth::new(config.tick_size, config.lot_size),
             0,
         ))
         .build()
@@ -32,45 +43,41 @@ fn prepare_live() -> LiveBot<IceoryxUnifiedChannel, HashMapMarketDepth> {
 
 fn main() {
     tracing_subscriber::fmt::init();
+    let args = Args::parse();
+    let config = grid_live_config::GridLiveConfig::load(&args.config)
+        .unwrap_or_else(|error| panic!("refusing to load live strategy configuration: {error:#}"));
 
-    let mut hbt = prepare_live();
-    let initial_state = live_state::wait_for_account_state(&mut hbt, 0, Duration::from_secs(30))
-        .unwrap_or_else(|error| panic!("refusing to start live trading: {error}"));
+    let mut hbt = prepare_live(&config);
+    let initial_state = live_state::wait_for_account_state(
+        &mut hbt,
+        0,
+        Duration::from_secs(config.startup_timeout_seconds),
+    )
+    .unwrap_or_else(|error| panic!("refusing to start live trading: {error}"));
     info!(
         ?initial_state,
         "Binance account state is ready; starting grid trading."
     );
 
-    let relative_half_spread = 0.001;
-    let relative_grid_interval = 0.001;
-    let grid_num = 10;
-    let min_grid_step = 0.00001; // DOGEUSDT tick size
-    let skew = relative_half_spread / grid_num as f64;
-    // At the current demo price this stays above Binance's 5 USDT minimum notional.
-    let order_qty = 100.0;
-    let max_position = grid_num as f64 * order_qty;
-
     let mut recorder = LoggingRecorder::new();
-    let mut dataset_recorder = alpha_dataset::OptionalDatasetRecorder::from_env()
-        .unwrap_or_else(|error| panic!("refusing to start Alpha dataset collection: {error:#}"));
+    let mut dataset_recorder =
+        alpha_dataset::OptionalDatasetRecorder::from_path(config.dataset_path.as_deref())
+            .unwrap_or_else(|error| {
+                panic!("refusing to start Alpha dataset collection: {error:#}")
+            });
     if dataset_recorder.is_enabled() {
         info!("Alpha dataset collection is enabled on the existing strategy market-data stream.");
     }
-    let alpha_model = match std::env::var("HFT_ALPHA_MODEL_PATH") {
-        Ok(path) => RuntimeAlphaModel::load(&path)
-            .unwrap_or_else(|error| panic!("refusing to load Alpha model {path}: {error}")),
-        Err(std::env::VarError::NotPresent) => RuntimeAlphaModel::flat(),
-        Err(error) => panic!("invalid HFT_ALPHA_MODEL_PATH: {error}"),
+    let alpha_model = match config.model_path.as_ref() {
+        Some(path) => RuntimeAlphaModel::load(path).unwrap_or_else(|error| {
+            panic!("refusing to load Alpha model {}: {error}", path.display())
+        }),
+        None => RuntimeAlphaModel::flat(),
     };
     let trained = alpha_model.is_trained();
     info!(trained, "Alpha inference backend is ready.");
     let alpha_config = if trained {
-        AlphaConfig {
-            confidence_threshold: 0.90,
-            calibrated_return: 0.0002,
-            max_relative_offset: 0.0002,
-            smoothing: 0.25,
-        }
+        config.alpha_config()
     } else {
         AlphaConfig::default()
     };
@@ -92,13 +99,13 @@ fn main() {
                 }
             }
         },
-        relative_half_spread,
-        relative_grid_interval,
-        grid_num,
-        min_grid_step,
-        skew,
-        order_qty,
-        max_position,
+        config.relative_half_spread,
+        config.relative_grid_interval,
+        config.grid_num,
+        config.min_grid_step,
+        config.skew,
+        config.order_qty,
+        config.max_position,
     )
     .unwrap();
     dataset_recorder.flush().unwrap();

@@ -262,8 +262,12 @@ impl MarketDataStream {
         // }
     }
 
-    pub async fn connect(&mut self, url: &str) -> Result<(), BinanceFuturesError> {
-        let (ws_stream, _) = connect_websocket(url).await?;
+    pub async fn connect(
+        &mut self,
+        url: &str,
+        proxy_url: Option<&str>,
+    ) -> Result<(), BinanceFuturesError> {
+        let (ws_stream, _) = connect_websocket(url, proxy_url).await?;
         let (mut write, mut read) = ws_stream.split();
         let mut ping_checker = time::interval(Duration::from_secs(10));
         let mut last_ping = Instant::now();

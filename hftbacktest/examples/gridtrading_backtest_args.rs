@@ -12,43 +12,35 @@ use hftbacktest::{
     },
     prelude::{ApplySnapshot, Bot, HashMapMarketDepth},
 };
+use serde::Deserialize;
 
 mod algo;
 
 #[derive(Parser, Debug)]
 #[command(about = None, long_about = None)]
+struct Cli {
+    /// TOML containing every backtest parameter.
+    config: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 struct Args {
-    #[arg(long)]
     name: String,
-    #[arg(long)]
     output_path: String,
-    #[arg(long, num_args = 1..)]
     data_files: Vec<String>,
-    #[arg(long)]
     initial_snapshot: Option<String>,
-    #[arg(long, num_args = 1..)]
     latency_files: Vec<String>,
-    #[arg(long)]
     tick_size: f64,
-    #[arg(long)]
     lot_size: f64,
-    #[arg(long)]
     relative_half_spread: f64,
-    #[arg(long)]
     relative_grid_interval: f64,
-    #[arg(long)]
     skew: f64,
-    #[arg(long)]
     grid_num: usize,
-    #[arg(long)]
     min_grid_step: Option<f64>,
-    #[arg(long)]
     order_qty: f64,
-    #[arg(long)]
     max_position: f64,
-    #[arg(long, default_value_t = -0.00005)]
     maker_fee: f64,
-    #[arg(long, default_value_t = 0.0007)]
     taker_fee: f64,
 }
 
@@ -82,7 +74,9 @@ fn prepare_backtest(
                 )
                 .latency_model(latency_model)
                 .asset_type(asset_type)
-                .fee_model(TradingValueFeeModel::new(CommonFees::new(-0.00005, 0.0007)))
+                .fee_model(TradingValueFeeModel::new(CommonFees::new(
+                    maker_fee, taker_fee,
+                )))
                 .exchange(ExchangeKind::NoPartialFillExchange)
                 .queue_model(queue_model)
                 .depth(move || {
@@ -103,7 +97,11 @@ fn prepare_backtest(
 fn main() {
     tracing_subscriber::fmt::init();
 
-    let args = Args::parse();
+    let cli = Cli::parse();
+    let text = std::fs::read_to_string(&cli.config)
+        .unwrap_or_else(|error| panic!("read {}: {error}", cli.config));
+    let args: Args =
+        toml::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", cli.config));
 
     let mut hbt = prepare_backtest(
         args.latency_files,

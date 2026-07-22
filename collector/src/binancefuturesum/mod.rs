@@ -16,6 +16,7 @@ fn handle(
     recv_time: DateTime<Utc>,
     data: Utf8Bytes,
     throttler: &Throttler,
+    proxy: Option<&str>,
 ) -> Result<(), ConnectorError> {
     let j: serde_json::Value = serde_json::from_str(data.as_str())?;
     if let Some(j_data) = j.get("data")
@@ -47,8 +48,12 @@ fn handle(
                 let symbol_ = symbol.to_string();
                 let writer_tx_ = writer_tx.clone();
                 let mut throttler_ = throttler.clone();
+                let proxy = proxy.map(str::to_string);
                 tokio::spawn(async move {
-                    match throttler_.execute(fetch_depth_snapshot(&symbol_)).await {
+                    match throttler_
+                        .execute(fetch_depth_snapshot(&symbol_, proxy.as_deref()))
+                        .await
+                    {
                         Some(Ok(data)) => {
                             let recv_time = Utc::now();
                             let _ = writer_tx_.send((recv_time, symbol_, data));
@@ -79,18 +84,31 @@ fn handle(
 pub async fn run_collection(
     streams: Vec<String>,
     symbols: Vec<String>,
+    proxy: Option<String>,
     writer_tx: UnboundedSender<(DateTime<Utc>, String, String)>,
 ) -> Result<(), anyhow::Error> {
     let mut prev_u_map = HashMap::new();
     let (ws_tx, mut ws_rx) = unbounded_channel();
-    let h = tokio::spawn(keep_connection(streams, symbols, ws_tx.clone()));
+    let h = tokio::spawn(keep_connection(
+        streams,
+        symbols,
+        proxy.clone(),
+        ws_tx.clone(),
+    ));
     // https://www.binance.com/en/support/faq/rate-limits-on-binance-futures-281596e222414cdd9051664ea621cdc3
     // The default rate limit per IP is 2,400/min and the weight is 20 at a depth of 1000.
     // The maximum request rate for fetching snapshots is 120 per minute.
     // Sets the rate limit with a margin to account for connection requests.
     let throttler = Throttler::new(100);
     while let Some((recv_time, data)) = ws_rx.recv().await {
-        if let Err(error) = handle(&mut prev_u_map, &writer_tx, recv_time, data, &throttler) {
+        if let Err(error) = handle(
+            &mut prev_u_map,
+            &writer_tx,
+            recv_time,
+            data,
+            &throttler,
+            proxy.as_deref(),
+        ) {
             error!(?error, "couldn't handle the received data.");
         }
     }

@@ -1,7 +1,16 @@
 # Binance Futures Demo uses one WebSocket endpoint for public and listen-key streams.
+# 本地 IPC 实例名；策略和 TUI 的 connector_name 必须与它一致。
+name = "binancefutures-demo"
+# Connector 实现类型；币安 U 本位合约固定为 binancefutures。
+connector = "binancefutures"
+# 注意：不要在此配置 symbols。币种由策略/TUI 通过 IPC 动态注册。
+
 # `stream_url` is the backward-compatible shared URL field.
 stream_url = "wss://demo-fstream.binance.com/ws"
 api_url = "https://demo-fapi.binance.com"
+# REST、公共 WebSocket 和私有 WebSocket 共用的 HTTP CONNECT 代理。
+# 默认值为 http://127.0.0.1:7890；设置为空字符串可关闭代理。
+proxy_url = "http://127.0.0.1:7890"
 
 order_prefix = "test"
 api_key = ""
