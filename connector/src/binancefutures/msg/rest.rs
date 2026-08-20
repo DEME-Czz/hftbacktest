@@ -109,6 +109,8 @@ pub struct PositionInformationV3 {
     #[serde(rename = "positionAmt")]
     #[serde(deserialize_with = "from_str_to_f64")]
     pub position_amount: f64,
+    #[serde(rename = "positionSide")]
+    pub position_side: String,
     #[serde(rename = "updateTime")]
     pub update_time: i64,
 }
@@ -175,6 +177,7 @@ mod tests {
 
         assert_eq!(position.symbol, "dogeusdt");
         assert_eq!(position.position_amount, 125.0);
+        assert_eq!(position.position_side, "BOTH");
         assert_eq!(position.update_time, 1_720_736_417_660);
     }
 

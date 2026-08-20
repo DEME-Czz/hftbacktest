@@ -14,7 +14,8 @@ use crate::{
     types::{
         Bot, BuildError, ElapseResult, Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT,
         LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveError, LiveEvent, LiveRequest, OrdType,
-        Order, OrderId, OrderRequest, Side, StateValues, Status, TimeInForce, WaitOrderResponse,
+        Order, OrderId, OrderRequest, PositionSide, Side, StateValues, Status, TimeInForce,
+        WaitOrderResponse,
     },
 };
 
@@ -366,6 +367,8 @@ where
         order_type: OrdType,
         wait: bool,
         side: Side,
+        reduce_only: bool,
+        position_side: PositionSide,
     ) -> Result<ElapseResult, BotError> {
         let instrument = self
             .instruments
@@ -394,6 +397,8 @@ where
             // Invalid information
             q: Box::new(()),
             maker: false,
+            reduce_only,
+            position_side,
         };
         let order_id = order.order_id;
         instrument.orders.insert(order_id, order.clone());
@@ -496,6 +501,8 @@ where
             order_type,
             wait,
             Side::Buy,
+            false,
+            PositionSide::Both,
         )
     }
 
@@ -519,6 +526,8 @@ where
             order_type,
             wait,
             Side::Sell,
+            false,
+            PositionSide::Both,
         )
     }
 
@@ -537,6 +546,8 @@ where
             order.order_type,
             wait,
             order.side,
+            order.reduce_only,
+            order.position_side,
         )
     }
 

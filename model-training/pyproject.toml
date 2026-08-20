@@ -1,0 +1,12 @@
+[project]
+name = "regime-model"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+train-regime-model = "regime_model.train_glasso:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

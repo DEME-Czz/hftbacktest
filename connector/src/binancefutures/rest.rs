@@ -1,5 +1,5 @@
 use chrono::Utc;
-use hftbacktest::types::{OrdType, Side, TimeInForce};
+use hftbacktest::types::{OrdType, PositionSide, Side, TimeInForce};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -203,6 +203,8 @@ impl BinanceFuturesClient {
         qty: f64,
         order_type: OrdType,
         time_in_force: TimeInForce,
+        reduce_only: bool,
+        position_side: PositionSide,
     ) -> Result<OrderResponse, BinanceFuturesError> {
         let mut body = String::with_capacity(200);
         body.push_str("newClientOrderId=");
@@ -219,6 +221,10 @@ impl BinanceFuturesClient {
         body.push_str(order_type.as_ref());
         body.push_str("&timeInForce=");
         body.push_str(time_in_force.as_ref());
+        body.push_str("&reduceOnly=");
+        body.push_str(if reduce_only { "true" } else { "false" });
+        body.push_str("&positionSide=");
+        body.push_str(position_side.as_ref());
 
         let resp: OrderResponseResult = self.post("/fapi/v1/order", body).await?;
         match resp {

@@ -78,6 +78,11 @@ impl UserDataStream {
                 drop(symbols);
 
                 for position in data.account.position {
+                    if position.position_side != "BOTH" {
+                        return Err(BinanceFuturesError::HedgeModeUnsupported(
+                            position.position_side,
+                        ));
+                    }
                     self.ev_tx
                         .send(PublishEvent::LiveEvent(LiveEvent::Position {
                             symbol: position.symbol,
@@ -315,6 +320,17 @@ pub async fn get_initial_state(
     // todo: rate-limit throttling.
     info!(?symbols, "Requesting Binance Futures account snapshot.");
     let account = client.get_account_information().await?;
+    for position in account
+        .positions
+        .iter()
+        .filter(|position| symbols.contains(&position.symbol))
+    {
+        if position.position_side != "BOTH" {
+            return Err(BinanceFuturesError::HedgeModeUnsupported(
+                position.position_side.clone(),
+            ));
+        }
+    }
     let balance_ts = account
         .assets
         .iter()

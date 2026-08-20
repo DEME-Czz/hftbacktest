@@ -49,6 +49,8 @@ pub enum BinanceFuturesError {
     PrefixUnmatched,
     #[error("OrderNotFound")]
     OrderNotFound,
+    #[error("HedgeModeUnsupported: expected positionSide=BOTH, got {0}")]
+    HedgeModeUnsupported(String),
     #[error("Tunstenite: {0:?}")]
     Tunstenite(#[from] tungstenite::Error),
     #[error("Config: {0:?}")]
@@ -81,6 +83,7 @@ impl From<BinanceFuturesError> for Value {
             BinanceFuturesError::Config(_) => Value::String(value.to_string()),
             BinanceFuturesError::PrefixUnmatched => Value::String(value.to_string()),
             BinanceFuturesError::OrderNotFound => Value::String(value.to_string()),
+            BinanceFuturesError::HedgeModeUnsupported(_) => Value::String(value.to_string()),
         }
     }
 }
@@ -276,6 +279,8 @@ impl Connector for BinanceFutures {
                             order.qty,
                             order.order_type,
                             order.time_in_force,
+                            order.reduce_only,
+                            order.position_side,
                         )
                         .await;
                     match result {

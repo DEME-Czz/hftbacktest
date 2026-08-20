@@ -156,6 +156,10 @@ impl L2MarketDepth for BTreeMarketDepth {
 }
 
 impl MarketDepth for BTreeMarketDepth {
+    fn timestamp(&self) -> Option<i64> {
+        Some(self.timestamp)
+    }
+
     #[inline(always)]
     fn best_bid(&self) -> f64 {
         if self.best_bid_tick == INVALID_MIN {

@@ -366,6 +366,10 @@ impl L2MarketDepth for ROIVectorMarketDepth {
 }
 
 impl MarketDepth for ROIVectorMarketDepth {
+    fn timestamp(&self) -> Option<i64> {
+        Some(self.timestamp)
+    }
+
     #[inline(always)]
     fn best_bid(&self) -> f64 {
         if self.best_bid_tick == INVALID_MIN {

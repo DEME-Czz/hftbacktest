@@ -378,6 +378,25 @@ pub enum Side {
     Unsupported = 127,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Decode, Encode, Default)]
+#[repr(u8)]
+pub enum PositionSide {
+    #[default]
+    Both = 0,
+    Long = 1,
+    Short = 2,
+}
+
+impl AsRef<str> for PositionSide {
+    fn as_ref(&self) -> &'static str {
+        match self {
+            Self::Both => "BOTH",
+            Self::Long => "LONG",
+            Self::Short => "SHORT",
+        }
+    }
+}
+
 impl AsRef<f64> for Side {
     fn as_ref(&self) -> &f64 {
         match self {
@@ -533,6 +552,9 @@ pub struct Order {
     pub status: Status,
     pub side: Side,
     pub time_in_force: TimeInForce,
+    /// Requests exchange-enforced position reduction where supported.
+    pub reduce_only: bool,
+    pub position_side: PositionSide,
 }
 
 impl Order {
@@ -553,6 +575,8 @@ impl Order {
             tick_size,
             side,
             time_in_force,
+            reduce_only: false,
+            position_side: PositionSide::Both,
             exch_timestamp: 0,
             status: Status::None,
             local_timestamp: 0,
@@ -674,6 +698,8 @@ impl<Context> Decode<Context> for Order {
             status: Decode::decode(decoder)?,
             side: Decode::decode(decoder)?,
             time_in_force: Decode::decode(decoder)?,
+            reduce_only: Decode::decode(decoder)?,
+            position_side: Decode::decode(decoder)?,
         })
     }
 }
@@ -698,6 +724,8 @@ impl<'de, Context> BorrowDecode<'de, Context> for Order {
             status: Decode::decode(decoder)?,
             side: Decode::decode(decoder)?,
             time_in_force: Decode::decode(decoder)?,
+            reduce_only: Decode::decode(decoder)?,
+            position_side: Decode::decode(decoder)?,
         })
     }
 }
@@ -720,6 +748,8 @@ impl Encode for Order {
         self.status.encode(encoder)?;
         self.side.encode(encoder)?;
         self.time_in_force.encode(encoder)?;
+        self.reduce_only.encode(encoder)?;
+        self.position_side.encode(encoder)?;
         Ok(())
     }
 }
@@ -778,6 +808,8 @@ pub struct OrderRequest {
     pub side: Side,
     pub time_in_force: TimeInForce,
     pub order_type: OrdType,
+    pub reduce_only: bool,
+    pub position_side: PositionSide,
 }
 
 /// Provides a bot interface for backtesting and live trading.

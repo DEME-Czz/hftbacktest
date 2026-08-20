@@ -8,7 +8,8 @@ use crate::{
     backtest::BacktestError,
     depth::{INVALID_MAX, INVALID_MIN, MarketDepth},
     types::{
-        AnyClone, BUY_EVENT, Event, OrdType, Order, OrderId, SELL_EVENT, Side, Status, TimeInForce,
+        AnyClone, BUY_EVENT, Event, OrdType, Order, OrderId, PositionSide, SELL_EVENT, Side,
+        Status, TimeInForce,
     },
 };
 
@@ -670,6 +671,8 @@ where
             req: Status::None,
             status: Status::None,
             time_in_force: TimeInForce::GTC,
+            reduce_only: false,
+            position_side: PositionSide::Both,
         });
 
         match self.mkt_feed_orders.entry(order_id) {
@@ -1123,7 +1126,8 @@ mod l3_tests {
     use crate::{
         backtest::{L3QueueModel, models::L3FIFOQueueModel},
         prelude::{
-            Event, HashMapMarketDepth, L3MarketDepth, OrdType, Order, Side, Status, TimeInForce,
+            Event, HashMapMarketDepth, L3MarketDepth, OrdType, Order, PositionSide, Side, Status,
+            TimeInForce,
         },
         types::{ADD_ORDER_EVENT, BUY_EVENT, EXCH_EVENT, FILL_EVENT, SELL_EVENT},
     };
@@ -1183,6 +1187,8 @@ mod l3_tests {
                 status: Status::None,
                 side: Side::Buy,
                 time_in_force: TimeInForce::GTC,
+                reduce_only: false,
+                position_side: PositionSide::Both,
             },
             &depth,
         )
@@ -1217,6 +1223,8 @@ mod l3_tests {
                 status: Status::None,
                 side: Side::Sell,
                 time_in_force: TimeInForce::GTC,
+                reduce_only: false,
+                position_side: PositionSide::Both,
             },
             &depth,
         )
@@ -1273,6 +1281,8 @@ mod l3_tests {
                 status: Status::None,
                 side: Side::Buy,
                 time_in_force: TimeInForce::GTC,
+                reduce_only: false,
+                position_side: PositionSide::Both,
             },
             &depth,
         )

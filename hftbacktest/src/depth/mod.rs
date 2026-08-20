@@ -25,6 +25,11 @@ pub const INVALID_MAX: i64 = i64::MAX;
 
 /// Provides MarketDepth interface.
 pub trait MarketDepth {
+    /// Timestamp of the most recently applied depth event, when tracked by the implementation.
+    fn timestamp(&self) -> Option<i64> {
+        None
+    }
+
     /// Returns the best bid price.
     /// If there is no best bid, it returns [`f64::NAN`].
     fn best_bid(&self) -> f64;

@@ -13,3 +13,6 @@ docs/_build
 # Local exchange credentials; copy from the tracked .example template.
 connector/examples/binancefutures-demo.toml
 connector/examples/binancefutures-prod.toml
+
+# Public market-data captures can be very large.
+runtime/market-data/
