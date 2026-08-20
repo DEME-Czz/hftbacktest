@@ -16,15 +16,12 @@
 //! - Backtesting of multi-asset and multi-exchange models
 //! - Deployment of a live trading bot using the same algo code
 //!
-//!
 //! ## Feature flags
 //!
 //! Currently, `default` enables `backtest`, `live` features.
 //!
 //! - `backtest`: Enables backtesting features.
 //! - `live`: Enables a live trading bot.
-//! - `s3`: Enables accessing data file from S3.
-//!
 
 /// Provides backtesting features.
 #[cfg(any(feature = "backtest", doc))]
