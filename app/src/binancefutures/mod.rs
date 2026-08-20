@@ -42,14 +42,14 @@ pub enum BinanceFuturesError {
     ConnectionAbort(String),
     #[error("ReqError: {0:?}")]
     ReqError(#[from] reqwest::Error),
-    #[error("OrderError: {code} - {msg})")]
+    #[error("OrderError: {code} - {msg}")]
     OrderError { code: i64, msg: String },
     #[error("PrefixUnmatched")]
     PrefixUnmatched,
     #[error("OrderNotFound")]
     OrderNotFound,
-    #[error("Tunstenite: {0:?}")]
-    Tunstenite(#[from] tungstenite::Error),
+    #[error("Tungstenite: {0:?}")]
+    Tungstenite(#[from] tungstenite::Error),
     #[error("Config: {0:?}")]
     Config(#[from] toml::de::Error),
 }
@@ -57,8 +57,6 @@ pub enum BinanceFuturesError {
 impl From<BinanceFuturesError> for Value {
     fn from(value: BinanceFuturesError) -> Value {
         match value {
-            BinanceFuturesError::InstrumentNotFound => Value::String(value.to_string()),
-            BinanceFuturesError::InvalidRequest => Value::String(value.to_string()),
             BinanceFuturesError::ReqError(error) => {
                 let mut map = HashMap::new();
                 if let Some(code) = error.status() {
@@ -73,32 +71,31 @@ impl From<BinanceFuturesError> for Value {
                 map.insert("msg".to_string(), Value::String(msg));
                 map
             }),
-            BinanceFuturesError::Tunstenite(error) => Value::String(format!("{error}")),
-            BinanceFuturesError::ListenKeyExpired => Value::String(value.to_string()),
-            BinanceFuturesError::ConnectionInterrupted => Value::String(value.to_string()),
-            BinanceFuturesError::ConnectionAbort(_) => Value::String(value.to_string()),
-            BinanceFuturesError::Config(_) => Value::String(value.to_string()),
-            BinanceFuturesError::PrefixUnmatched => Value::String(value.to_string()),
-            BinanceFuturesError::OrderNotFound => Value::String(value.to_string()),
+            other => Value::String(other.to_string()),
         }
     }
 }
 
+/// Binance USD-M configuration.
+///
+/// Binance split Futures WebSocket traffic into dedicated public/private entry points in 2026.
+/// Keep these URLs separate; a single legacy `stream_url` is intentionally no longer supported.
 #[derive(Deserialize)]
 pub struct Config {
-    stream_url: String,
-    api_url: String,
+    pub public_stream_url: String,
+    pub private_stream_url: String,
+    pub api_url: String,
     #[serde(default)]
-    order_prefix: String,
+    pub order_prefix: String,
     #[serde(default)]
-    api_key: String,
+    pub api_key: String,
     #[serde(default)]
-    secret: String,
+    pub secret: String,
 }
 
 type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
 
-/// A connector for Binance USD-m Futures.
+/// Binance USD-M Futures adapter.
 pub struct BinanceFutures {
     config: Config,
     symbols: SharedSymbolSet,
@@ -109,17 +106,14 @@ pub struct BinanceFutures {
 
 impl BinanceFutures {
     pub fn connect_market_data_stream(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
-        let base_url = self.config.stream_url.clone();
+        let base_url = self.config.public_stream_url.clone();
         let client = self.client.clone();
         let symbol_tx = self.symbol_tx.clone();
 
         tokio::spawn(async move {
             let _ = Retry::new(ExponentialBackoff::default())
                 .error_handler(|error: BinanceFuturesError| {
-                    error!(
-                        ?error,
-                        "An error occurred in the market data stream connection."
-                    );
+                    error!(?error, "market data stream connection interrupted");
                     ev_tx
                         .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
                             ErrorKind::ConnectionInterrupted,
@@ -134,9 +128,8 @@ impl BinanceFutures {
                         ev_tx.clone(),
                         symbol_tx.subscribe(),
                     );
-                    debug!("Connecting to the market data stream...");
+                    debug!(%base_url, "connecting Binance public market stream");
                     stream.connect(&base_url).await?;
-                    debug!("The market data stream connection is permanently closed.");
                     Ok(())
                 })
                 .await;
@@ -144,7 +137,7 @@ impl BinanceFutures {
     }
 
     pub fn connect_user_data_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
-        let base_url = self.config.stream_url.clone();
+        let base_url = self.config.private_stream_url.clone();
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         let instruments = self.symbols.clone();
@@ -153,10 +146,7 @@ impl BinanceFutures {
         tokio::spawn(async move {
             let _ = Retry::new(ExponentialBackoff::default())
                 .error_handler(|error: BinanceFuturesError| {
-                    error!(
-                        ?error,
-                        "An error occurred in the user data stream connection."
-                    );
+                    error!(?error, "user data stream connection interrupted");
                     ev_tx
                         .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
                             ErrorKind::ConnectionInterrupted,
@@ -173,13 +163,13 @@ impl BinanceFutures {
                         instruments.clone(),
                         symbol_tx.subscribe(),
                     );
-
-                    debug!("Requesting the listen key for the user data stream...");
                     let listen_key = stream.get_listen_key().await?;
-
-                    debug!("Connecting to the user data stream...");
-                    stream.connect(&format!("{base_url}/{listen_key}")).await?;
-                    debug!("The user data stream connection is permanently closed.");
+                    // 2026 private WebSocket endpoint: /private/ws?listenKey=...&events=...
+                    let url = format!(
+                        "{base_url}?listenKey={listen_key}&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE/TRADE_LITE/listenKeyExpired"
+                    );
+                    debug!("connecting Binance private user stream");
+                    stream.connect(&url).await?;
                     Ok(())
                 })
                 .await;
@@ -192,12 +182,11 @@ impl ConnectorBuilder for BinanceFutures {
 
     fn build_from(config: &str) -> Result<Self, Self::Error> {
         let config: Config = toml::from_str(config)?;
-
         let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
         let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret);
         let (symbol_tx, _) = broadcast::channel(500);
 
-        Ok(BinanceFutures {
+        Ok(Self {
             config,
             symbols: Default::default(),
             order_manager,
@@ -209,14 +198,9 @@ impl ConnectorBuilder for BinanceFutures {
 
 impl Connector for BinanceFutures {
     fn register(&mut self, symbol: String) {
-        // Binance futures symbols must be lowercase to subscribe to the WebSocket stream.
-        if symbol.to_lowercase() != symbol {
-            error!("Binance Futures symbol must be lowercase.");
-        }
         let symbol = symbol.to_lowercase();
         let mut symbols = self.symbols.lock().unwrap();
-        if !symbols.contains(&symbol) {
-            symbols.insert(symbol.clone());
+        if symbols.insert(symbol.clone()) {
             self.symbol_tx.send(symbol).unwrap();
         }
     }
@@ -227,16 +211,14 @@ impl Connector for BinanceFutures {
 
     fn run(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
         self.connect_market_data_stream(ev_tx.clone());
-        // Connects to the user stream only if the API key and secret are provided.
         if !self.config.api_key.is_empty() && !self.config.secret.is_empty() {
-            self.connect_user_data_stream(ev_tx.clone());
+            self.connect_user_data_stream(ev_tx);
         }
     }
 
     fn submit(&self, symbol: String, mut order: Order, tx: UnboundedSender<PublishEvent>) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
-
         tokio::spawn(async move {
             let client_order_id = order_manager
                 .lock()
@@ -264,11 +246,8 @@ impl Connector for BinanceFutures {
                                 .unwrap()
                                 .update_from_rest(&client_order_id, &resp)
                             {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
+                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }))
+                                    .unwrap();
                             }
                         }
                         Err(error) => {
@@ -278,12 +257,11 @@ impl Connector for BinanceFutures {
                                 .update_submit_fail(&client_order_id, &error)
                             {
                                 tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
+                                    symbol: symbol.clone(),
                                     order,
                                 }))
                                 .unwrap();
                             }
-
                             tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
                                 ErrorKind::OrderError,
                                 error.into(),
@@ -293,11 +271,7 @@ impl Connector for BinanceFutures {
                     }
                 }
                 None => {
-                    warn!(
-                        ?order,
-                        "Coincidentally, creates a duplicated client order id. \
-                        This order request will be expired."
-                    );
+                    warn!(?order, "duplicate client order id; expiring local request");
                     order.req = Status::None;
                     order.status = Status::Expired;
                     tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }))
@@ -310,58 +284,45 @@ impl Connector for BinanceFutures {
     fn cancel(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
-
         tokio::spawn(async move {
             let client_order_id = order_manager
                 .lock()
                 .unwrap()
                 .get_client_order_id(&symbol, order.order_id);
 
-            match client_order_id {
-                Some(client_order_id) => {
-                    let result = client.cancel_order(&client_order_id, &symbol).await;
-                    match result {
-                        Ok(resp) => {
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_from_rest(&client_order_id, &resp)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
+            if let Some(client_order_id) = client_order_id {
+                match client.cancel_order(&client_order_id, &symbol).await {
+                    Ok(resp) => {
+                        if let Some(order) = order_manager
+                            .lock()
+                            .unwrap()
+                            .update_from_rest(&client_order_id, &resp)
+                        {
+                            tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }))
                                 .unwrap();
-                            }
-                        }
-                        Err(error) => {
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_cancel_fail(&client_order_id, &error)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
-                            }
-
-                            tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                                ErrorKind::OrderError,
-                                error.into(),
-                            ))))
-                            .unwrap();
                         }
                     }
+                    Err(error) => {
+                        if let Some(order) = order_manager
+                            .lock()
+                            .unwrap()
+                            .update_cancel_fail(&client_order_id, &error)
+                        {
+                            tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                                symbol: symbol.clone(),
+                                order,
+                            }))
+                            .unwrap();
+                        }
+                        tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                            ErrorKind::OrderError,
+                            error.into(),
+                        ))))
+                        .unwrap();
+                    }
                 }
-                None => {
-                    warn!(
-                        order_id = order.order_id,
-                        "client_order_id corresponding to order_id is not found; \
-                        this may be due to the order already being canceled or filled."
-                    );
-                }
+            } else {
+                warn!(order_id = order.order_id, "client order id not found");
             }
         });
     }
