@@ -1,9 +1,5 @@
 use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
-use serde::{
-    Deserialize,
-    Deserializer,
-    de::{Error, Unexpected},
-};
+use serde::{Deserialize, Deserializer, de::{Error, Unexpected}};
 
 #[allow(dead_code)]
 pub mod rest;
@@ -32,47 +28,38 @@ where
         "PARTIALLY_FILLED" => Ok(Status::PartiallyFilled),
         "FILLED" => Ok(Status::Filled),
         "CANCELED" => Ok(Status::Canceled),
-        // "REJECTED" => Ok(Status::Rejected),
-        "EXPIRED" => Ok(Status::Expired),
-        // "EXPIRED_IN_MATCH" => Ok(Status::ExpiredInMatch),
-        s => Err(Error::invalid_value(
-            Unexpected::Other(s),
-            &"NEW,PARTIALLY_FILLED,FILLED,CANCELED,EXPIRED",
-        )),
+        "REJECTED" => Ok(Status::Rejected),
+        "EXPIRED" | "EXPIRED_IN_MATCH" => Ok(Status::Expired),
+        _ => Ok(Status::Unsupported),
     }
 }
 
+/// The engine intentionally trades only LIMIT/MARKET. New or external Binance order types are
+/// decoded as `Unsupported` so one unknown order does not break the entire user-data stream.
 fn from_str_to_type<'de, D>(deserializer: D) -> Result<OrdType, D::Error>
 where
     D: Deserializer<'de>,
 {
     let s: &str = Deserialize::deserialize(deserializer)?;
-    match s {
-        "LIMIT" => Ok(OrdType::Limit),
-        "MARKET" => Ok(OrdType::Market),
-        // "STOP" => Ok(OrdType::StopLimit),
-        // "TAKE_PROFIT" => Ok(OrdType::TakeProfitLimit),
-        // "STOP_MARKET" => Ok(OrdType::StopMarket),
-        // "TAKE_PROFIT_MARKET" => Ok(OrdType::TakeProfitMarket),
-        // "TRAILING_STOP_MARKET" => Ok(OrdType::TrailingStopMarket),
-        s => Err(Error::invalid_value(Unexpected::Other(s), &"LIMIT,MARKET")),
-    }
+    Ok(match s {
+        "LIMIT" => OrdType::Limit,
+        "MARKET" => OrdType::Market,
+        _ => OrdType::Unsupported,
+    })
 }
 
+/// GTD/RPI are current Binance values but are outside this engine's execution surface. Decode
+/// them as `Unsupported` rather than failing deserialization of account/order events.
 fn from_str_to_tif<'de, D>(deserializer: D) -> Result<TimeInForce, D::Error>
 where
     D: Deserializer<'de>,
 {
     let s: &str = Deserialize::deserialize(deserializer)?;
-    match s {
-        "GTC" => Ok(TimeInForce::GTC),
-        "IOC" => Ok(TimeInForce::IOC),
-        "FOK" => Ok(TimeInForce::FOK),
-        "GTX" => Ok(TimeInForce::GTX),
-        // "GTD" => Ok(TimeInForce::GTD),
-        s => Err(Error::invalid_value(
-            Unexpected::Other(s),
-            &"GTC,IOC,FOK,GTX",
-        )),
-    }
+    Ok(match s {
+        "GTC" => TimeInForce::GTC,
+        "IOC" => TimeInForce::IOC,
+        "FOK" => TimeInForce::FOK,
+        "GTX" => TimeInForce::GTX,
+        _ => TimeInForce::Unsupported,
+    })
 }
