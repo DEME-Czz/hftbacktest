@@ -14,6 +14,14 @@ use crate::{
     utils::sign_hmac_sha256,
 };
 
+fn side_str(side: Side) -> &'static str {
+    match side {
+        Side::Buy => "BUY",
+        Side::Sell => "SELL",
+        _ => panic!("unsupported Binance order side"),
+    }
+}
+
 #[derive(Clone)]
 pub struct BinanceFuturesClient {
     client: reqwest::Client,
@@ -24,12 +32,7 @@ pub struct BinanceFuturesClient {
 
 impl BinanceFuturesClient {
     pub fn new(url: &str, api_key: &str, secret: &str) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            url: url.to_string(),
-            api_key: api_key.to_string(),
-            secret: secret.to_string(),
-        }
+        Self { client: reqwest::Client::new(), url: url.to_string(), api_key: api_key.to_string(), secret: secret.to_string() }
     }
 
     async fn get_noauth<T: for<'a> Deserialize<'a>>(&self, path: &str, query: String) -> Result<T, reqwest::Error> {
@@ -44,8 +47,7 @@ impl BinanceFuturesClient {
     async fn get<T: for<'a> Deserialize<'a>>(&self, path: &str, query: String) -> Result<T, reqwest::Error> {
         let signed_query = self.signed_query(&query);
         let signature = sign_hmac_sha256(&self.secret, &signed_query);
-        self.client.get(format!("{}{}?{}&signature={}", self.url, path, signed_query, signature))
-            .header("Accept", "application/json").header("X-MBX-APIKEY", &self.api_key).send().await?.json().await
+        self.client.get(format!("{}{}?{}&signature={}", self.url, path, signed_query, signature)).header("Accept", "application/json").header("X-MBX-APIKEY", &self.api_key).send().await?.json().await
     }
 
     async fn signed_body_request<T: for<'a> Deserialize<'a>>(&self, method: reqwest::Method, path: &str, body: String) -> Result<T, reqwest::Error> {
@@ -56,32 +58,22 @@ impl BinanceFuturesClient {
         let signature = sign_hmac_sha256(&self.secret, &params);
         params.push_str("&signature=");
         params.push_str(&signature);
-        self.client.request(method, format!("{}{}", self.url, path))
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .header("X-MBX-APIKEY", &self.api_key)
-            .body(params).send().await?.json().await
+        self.client.request(method, format!("{}{}", self.url, path)).header("Accept", "application/json").header("Content-Type", "application/x-www-form-urlencoded").header("X-MBX-APIKEY", &self.api_key).body(params).send().await?.json().await
     }
 
-    async fn put<T: for<'a> Deserialize<'a>>(&self, path: &str, body: String) -> Result<T, reqwest::Error> {
-        self.signed_body_request(reqwest::Method::PUT, path, body).await
-    }
-    async fn post<T: for<'a> Deserialize<'a>>(&self, path: &str, body: String) -> Result<T, reqwest::Error> {
-        self.signed_body_request(reqwest::Method::POST, path, body).await
-    }
-    async fn delete<T: for<'a> Deserialize<'a>>(&self, path: &str, body: String) -> Result<T, reqwest::Error> {
-        self.signed_body_request(reqwest::Method::DELETE, path, body).await
-    }
+    async fn put<T: for<'a> Deserialize<'a>>(&self, path: &str, body: String) -> Result<T, reqwest::Error> { self.signed_body_request(reqwest::Method::PUT, path, body).await }
+    async fn post<T: for<'a> Deserialize<'a>>(&self, path: &str, body: String) -> Result<T, reqwest::Error> { self.signed_body_request(reqwest::Method::POST, path, body).await }
+    async fn delete<T: for<'a> Deserialize<'a>>(&self, path: &str, body: String) -> Result<T, reqwest::Error> { self.signed_body_request(reqwest::Method::DELETE, path, body).await }
 
     async fn user_stream_request<T: for<'a> Deserialize<'a>>(&self, method: reqwest::Method) -> Result<T, reqwest::Error> {
-        self.client.request(method, format!("{}/fapi/v1/listenKey", self.url))
-            .header("Accept", "application/json").header("X-MBX-APIKEY", &self.api_key).send().await?.json().await
+        self.client.request(method, format!("{}/fapi/v1/listenKey", self.url)).header("Accept", "application/json").header("X-MBX-APIKEY", &self.api_key).send().await?.json().await
     }
 
     pub async fn start_user_data_stream(&self) -> Result<String, reqwest::Error> {
         let resp: ListenKey = self.user_stream_request(reqwest::Method::POST).await?;
         Ok(resp.listen_key)
     }
+
     pub async fn keepalive_user_data_stream(&self) -> Result<String, reqwest::Error> {
         let resp: ListenKey = self.user_stream_request(reqwest::Method::PUT).await?;
         Ok(resp.listen_key)
@@ -92,7 +84,7 @@ impl BinanceFuturesClient {
         let mut body = String::with_capacity(220);
         body.push_str("newClientOrderId="); body.push_str(client_order_id);
         body.push_str("&symbol="); body.push_str(symbol);
-        body.push_str("&side="); body.push_str(side.as_ref());
+        body.push_str("&side="); body.push_str(side_str(side));
         if order_type == OrdType::Limit {
             body.push_str("&price="); body.push_str(&format!("{price:.price_prec$}"));
             body.push_str("&timeInForce="); body.push_str(time_in_force.as_ref());
@@ -112,7 +104,7 @@ impl BinanceFuturesClient {
             if i > 0 { body.push(','); }
             body.push_str("{\"newClientOrderId\":\""); body.push_str(&order.0);
             body.push_str("\",\"symbol\":\""); body.push_str(&order.1);
-            body.push_str("\",\"side\":\""); body.push_str(order.2.as_ref());
+            body.push_str("\",\"side\":\""); body.push_str(side_str(order.2));
             if order.6 == OrdType::Limit {
                 body.push_str("\",\"price\":\""); body.push_str(&format!("{:.prec$}", order.3, prec = order.4));
                 body.push_str("\",\"timeInForce\":\""); body.push_str(order.7.as_ref());
@@ -127,7 +119,7 @@ impl BinanceFuturesClient {
     }
 
     pub async fn modify_order(&self, client_order_id: &str, symbol: &str, side: Side, price: f64, price_prec: usize, qty: f64) -> Result<OrderResponse, BinanceFuturesError> {
-        let body = format!("symbol={symbol}&origClientOrderId={client_order_id}&side={}&price={price:.price_prec$}&quantity={qty:.5}", side.as_ref());
+        let body = format!("symbol={symbol}&origClientOrderId={client_order_id}&side={}&price={price:.price_prec$}&quantity={qty:.5}", side_str(side));
         let resp: OrderResponseResult = self.put("/fapi/v1/order", body).await?;
         match resp { OrderResponseResult::Ok(resp) => Ok(resp), OrderResponseResult::Err(resp) => Err(BinanceFuturesError::OrderError { code: resp.code, msg: resp.msg }) }
     }
@@ -147,13 +139,10 @@ impl BinanceFuturesClient {
     }
 
     pub async fn cancel_all_orders(&self, symbol: &str) -> Result<(), reqwest::Error> {
-        let _: serde_json::Value = self.delete("/fapi/v1/allOpenOrders", format!("symbol={symbol}" )).await?;
+        let _: serde_json::Value = self.delete("/fapi/v1/allOpenOrders", format!("symbol={symbol}")).await?;
         Ok(())
     }
-    pub async fn get_position_information(&self) -> Result<Vec<PositionInformationV3>, reqwest::Error> {
-        self.get("/fapi/v3/positionRisk", String::new()).await
-    }
-    pub async fn get_depth(&self, symbol: &str) -> Result<rest::Depth, reqwest::Error> {
-        self.get_noauth("/fapi/v1/depth", format!("symbol={symbol}&limit=1000")).await
-    }
+
+    pub async fn get_position_information(&self) -> Result<Vec<PositionInformationV3>, reqwest::Error> { self.get("/fapi/v3/positionRisk", String::new()).await }
+    pub async fn get_depth(&self, symbol: &str) -> Result<rest::Depth, reqwest::Error> { self.get_noauth("/fapi/v1/depth", format!("symbol={symbol}&limit=1000")).await }
 }
