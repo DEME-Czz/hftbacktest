@@ -5,7 +5,7 @@ use std::{
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use hftbacktest::{live::ipc::TO_ALL, prelude::*};
+use hftbacktest::prelude::*;
 use tokio::{
     select,
     sync::{
@@ -31,6 +31,8 @@ use crate::{
     utils::{connect_websocket, generate_rand_string, parse_depth, parse_px_qty_tup},
 };
 
+const BROADCAST_TARGET: u64 = 0;
+
 pub struct MarketDataStream {
     client: BinanceFuturesClient,
     ev_tx: UnboundedSender<PublishEvent>,
@@ -47,7 +49,7 @@ impl MarketDataStream {
         ev_tx: UnboundedSender<PublishEvent>,
         symbol_rx: Receiver<String>,
     ) -> Self {
-        let (rest_tx, rest_rx) = unbounded_channel::<(String, rest::Depth)>();
+        let (rest_tx, rest_rx) = unbounded_channel();
         Self {
             client,
             ev_tx,
@@ -59,204 +61,217 @@ impl MarketDataStream {
         }
     }
 
-    fn process_message(&mut self, stream: EventStream) {
-        match stream {
-            EventStream::DepthUpdate(data) => {
-                let mut prev_u_val = self.prev_u.get_mut(&data.symbol);
-                if prev_u_val.is_none()
-                /* fixme: || data.prev_update_id != **prev_u_val.as_ref().unwrap()*/
-                {
-                    // if !pending_depth_messages.contains_key(&data.symbol) {
-                    let client_ = self.client.clone();
-                    let symbol = data.symbol.clone();
-                    let rest_tx = self.rest_tx.clone();
-                    tokio::spawn(async move {
-                        let resp = client_.get_depth(&symbol).await;
-                        match resp {
-                            Ok(depth) => {
-                                rest_tx.send((symbol, depth)).unwrap();
-                            }
-                            Err(error) => {
-                                error!(
-                                    ?error,
-                                    %symbol,
-                                    "Couldn't get the market depth via REST."
-                                );
-                            }
-                        }
-                    });
-                    // }
-                    // pending_depth_messages
-                    //     .entry(data.symbol.clone())
-                    //     .or_insert(Vec::new())
-                    //     .push(data);
-                    // continue;
+    fn request_snapshot(&self, symbol: String) {
+        let client = self.client.clone();
+        let rest_tx = self.rest_tx.clone();
+        tokio::spawn(async move {
+            match client.get_depth(&symbol).await {
+                Ok(depth) => {
+                    let _ = rest_tx.send((symbol, depth));
                 }
-                // *prev_u_val.unwrap() = data.last_update_id;
-                // fixme: currently supports natural refresh only.
-                *self
-                    .prev_u
-                    .entry(data.symbol.clone())
-                    .or_insert(data.last_update_id) = data.last_update_id;
-
-                match parse_depth(data.bids, data.asks) {
-                    Ok((bids, asks)) => {
-                        self.ev_tx.send(PublishEvent::BatchStart(TO_ALL)).unwrap();
-
-                        for (px, qty) in bids {
-                            self.ev_tx
-                                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                                    symbol: data.symbol.clone(),
-                                    event: Event {
-                                        ev: LOCAL_BID_DEPTH_EVENT,
-                                        exch_ts: data.transaction_time * 1_000_000,
-                                        local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
-                                        order_id: 0,
-                                        px,
-                                        qty,
-                                        ival: 0,
-                                        fval: 0.0,
-                                    },
-                                }))
-                                .unwrap();
-                        }
-
-                        for (px, qty) in asks {
-                            self.ev_tx
-                                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                                    symbol: data.symbol.clone(),
-                                    event: Event {
-                                        ev: LOCAL_ASK_DEPTH_EVENT,
-                                        exch_ts: data.transaction_time * 1_000_000,
-                                        local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
-                                        order_id: 0,
-                                        px,
-                                        qty,
-                                        ival: 0,
-                                        fval: 0.0,
-                                    },
-                                }))
-                                .unwrap();
-                        }
-
-                        self.ev_tx.send(PublishEvent::BatchEnd(TO_ALL)).unwrap();
-                    }
-                    Err(error) => {
-                        error!(?error, "Couldn't parse DepthUpdate stream.");
-                    }
+                Err(error) => {
+                    error!(?error, %symbol, "failed to fetch Binance depth snapshot");
                 }
             }
-            EventStream::Trade(data) => match parse_px_qty_tup(data.price, data.qty) {
-                Ok((px, qty)) => {
-                    if data.type_ != "MARKET" {
-                        return;
-                    }
-                    self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                            symbol: data.symbol,
-                            event: Event {
-                                ev: {
-                                    if data.is_the_buyer_the_market_maker {
-                                        LOCAL_SELL_TRADE_EVENT
-                                    } else {
-                                        LOCAL_BUY_TRADE_EVENT
-                                    }
-                                },
-                                exch_ts: data.transaction_time * 1_000_000,
-                                local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
-                                order_id: 0,
-                                px,
-                                qty,
-                                ival: 0,
-                                fval: 0.0,
-                            },
-                        }))
-                        .unwrap();
-                }
-                Err(e) => {
-                    error!(error = ?e, "Couldn't parse trade stream.");
-                }
-            },
-            _ => unreachable!(),
+        });
+    }
+
+    fn emit_depth_levels(
+        &self,
+        symbol: &str,
+        transaction_time: i64,
+        bids: Vec<(String, String)>,
+        asks: Vec<(String, String)>,
+    ) {
+        let Ok((bids, asks)) = parse_depth(bids, asks) else {
+            error!(%symbol, "failed to parse Binance depth levels");
+            return;
+        };
+
+        self.ev_tx
+            .send(PublishEvent::BatchStart(BROADCAST_TARGET))
+            .unwrap();
+
+        for (px, qty) in bids {
+            self.ev_tx
+                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                    symbol: symbol.to_string(),
+                    event: Event {
+                        ev: LOCAL_BID_DEPTH_EVENT,
+                        exch_ts: transaction_time * 1_000_000,
+                        local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
+                        order_id: 0,
+                        px,
+                        qty,
+                        ival: 0,
+                        fval: 0.0,
+                    },
+                }))
+                .unwrap();
+        }
+
+        for (px, qty) in asks {
+            self.ev_tx
+                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                    symbol: symbol.to_string(),
+                    event: Event {
+                        ev: LOCAL_ASK_DEPTH_EVENT,
+                        exch_ts: transaction_time * 1_000_000,
+                        local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
+                        order_id: 0,
+                        px,
+                        qty,
+                        ival: 0,
+                        fval: 0.0,
+                    },
+                }))
+                .unwrap();
+        }
+
+        self.ev_tx
+            .send(PublishEvent::BatchEnd(BROADCAST_TARGET))
+            .unwrap();
+    }
+
+    fn emit_depth_update(&self, data: &stream::Depth) {
+        self.emit_depth_levels(
+            &data.symbol,
+            data.transaction_time,
+            data.bids.clone(),
+            data.asks.clone(),
+        );
+    }
+
+    fn handle_depth_update(&mut self, data: stream::Depth) {
+        let symbol = data.symbol.clone();
+
+        if let Some(previous_u) = self.prev_u.get(&symbol).copied() {
+            // Binance requires pu == previous u after the initial snapshot handoff.
+            if data.prev_update_id != previous_u {
+                warn!(
+                    %symbol,
+                    previous_u,
+                    pu = data.prev_update_id,
+                    "Binance depth sequence gap detected; resynchronizing"
+                );
+                self.prev_u.remove(&symbol);
+                self.pending_depth_messages.insert(symbol.clone(), vec![data]);
+                self.request_snapshot(symbol);
+                return;
+            }
+            self.emit_depth_update(&data);
+            self.prev_u.insert(symbol, data.last_update_id);
+            return;
+        }
+
+        let pending = self
+            .pending_depth_messages
+            .entry(symbol.clone())
+            .or_default();
+        let request_snapshot = pending.is_empty();
+        pending.push(data);
+        if request_snapshot {
+            self.request_snapshot(symbol);
         }
     }
 
-    fn process_snapshot(&self, symbol: String, data: rest::Depth) {
-        match parse_depth(data.bids, data.asks) {
-            Ok((bids, asks)) => {
-                self.ev_tx.send(PublishEvent::BatchStart(TO_ALL)).unwrap();
+    fn process_snapshot(&mut self, symbol: String, data: rest::Depth) {
+        // Clear the local book before applying a fresh REST snapshot.
+        self.ev_tx
+            .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                symbol: symbol.clone(),
+                event: Event {
+                    ev: LOCAL_DEPTH_CLEAR_EVENT,
+                    exch_ts: data.transaction_time * 1_000_000,
+                    local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
+                    order_id: 0,
+                    px: 0.0,
+                    qty: 0.0,
+                    ival: 0,
+                    fval: 0.0,
+                },
+            }))
+            .unwrap();
 
-                for (px, qty) in bids {
-                    self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                            symbol: symbol.clone(),
-                            event: Event {
-                                ev: LOCAL_BID_DEPTH_EVENT,
-                                exch_ts: data.transaction_time * 1_000_000,
-                                local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
-                                order_id: 0,
-                                px,
-                                qty,
-                                ival: 0,
-                                fval: 0.0,
-                            },
-                        }))
-                        .unwrap();
-                }
+        self.emit_depth_levels(
+            &symbol,
+            data.transaction_time,
+            data.bids,
+            data.asks,
+        );
 
-                for (px, qty) in asks {
-                    self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                            symbol: symbol.clone(),
-                            event: Event {
-                                ev: LOCAL_ASK_DEPTH_EVENT,
-                                exch_ts: data.transaction_time * 1_000_000,
-                                local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
-                                order_id: 0,
-                                px,
-                                qty,
-                                ival: 0,
-                                fval: 0.0,
-                            },
-                        }))
-                        .unwrap();
-                }
+        let mut pending = self
+            .pending_depth_messages
+            .remove(&symbol)
+            .unwrap_or_default();
+        pending.retain(|event| event.last_update_id >= data.last_update_id);
 
-                self.ev_tx.send(PublishEvent::BatchEnd(TO_ALL)).unwrap();
+        let Some(first_index) = pending.iter().position(|event| {
+            event.first_update_id <= data.last_update_id
+                && event.last_update_id >= data.last_update_id
+        }) else {
+            // No buffered event bridges the snapshot yet; wait for a new update and fetch again.
+            self.prev_u.remove(&symbol);
+            return;
+        };
+
+        let mut previous_u = None;
+        for event in pending.into_iter().skip(first_index) {
+            if let Some(prev) = previous_u
+                && event.prev_update_id != prev
+            {
+                warn!(%symbol, prev, pu = event.prev_update_id, "gap in buffered depth updates");
+                self.prev_u.remove(&symbol);
+                self.pending_depth_messages
+                    .entry(symbol.clone())
+                    .or_default()
+                    .push(event);
+                self.request_snapshot(symbol.clone());
+                return;
             }
-            Err(error) => {
-                error!(?error, "Couldn't parse Depth response.");
-            }
+            self.emit_depth_update(&event);
+            previous_u = Some(event.last_update_id);
         }
-        // fixme: waits for pending messages without blocking.
-        // prev_u.remove(&symbol);
-        // let mut new_prev_u: Option<i64> = None;
-        // while new_prev_u.is_none() {
-        //     if let Some(msg) = pending_depth_messages.get_mut(&symbol) {
-        //         for pending_depth in msg.into_iter() {
-        //             // https://binance-docs.github.io/apidocs/futures/en/#how-to-manage-a-local-order-book-correctly
-        //             // The first processed event should have U <= lastUpdateId AND u >= lastUpdateId
-        //             if (
-        //                 pending_depth.last_update_id < resp.last_update_id
-        //                 || pending_depth.first_update_id > resp.last_update_id
-        //             ) && new_prev_u.is_none() {
-        //                 continue;
-        //             }
-        //             if new_prev_u.is_some() && pending_depth.prev_update_id != *new_prev_u.as_ref().unwrap() {
-        //                 warn!(%symbol, ?pending_depth, "UpdateId does not match.");
-        //             }
-        //
-        //             // Processes a pending depth message
-        //             new_prev_u = Some(pending_depth.last_update_id);
-        //             *prev_u.entry(symbol.clone())
-        //                 .or_insert(pending_depth.last_update_id) = pending_depth.last_update_id;
-        //         }
-        //     }
-        //     if new_prev_u.is_none() {
-        //         // Waits for depth messages.
-        //         todo!()
-        //     }
-        // }
+
+        if let Some(last_u) = previous_u {
+            self.prev_u.insert(symbol, last_u);
+        }
+    }
+
+    fn process_message(&mut self, stream: EventStream) {
+        match stream {
+            EventStream::DepthUpdate(data) => self.handle_depth_update(data),
+            EventStream::Trade(data) => {
+                if data.type_ != "MARKET" {
+                    return;
+                }
+                match parse_px_qty_tup(data.price, data.qty) {
+                    Ok((px, qty)) => {
+                        self.ev_tx
+                            .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                                symbol: data.symbol,
+                                event: Event {
+                                    ev: if data.is_the_buyer_the_market_maker {
+                                        LOCAL_SELL_TRADE_EVENT
+                                    } else {
+                                        LOCAL_BUY_TRADE_EVENT
+                                    },
+                                    exch_ts: data.transaction_time * 1_000_000,
+                                    local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
+                                    order_id: 0,
+                                    px,
+                                    qty,
+                                    ival: 0,
+                                    fval: 0.0,
+                                },
+                            }))
+                            .unwrap();
+                    }
+                    Err(error) => error!(?error, "failed to parse Binance trade stream"),
+                }
+            }
+            _ => unreachable!(),
+        }
     }
 
     pub async fn connect(&mut self, url: &str) -> Result<(), BinanceFuturesError> {
@@ -272,7 +287,6 @@ impl MarketDataStream {
                 }
                 _ = ping_checker.tick() => {
                     if last_ping.elapsed() > Duration::from_secs(300) {
-                        warn!("Ping timeout.");
                         return Err(BinanceFuturesError::ConnectionInterrupted);
                     }
                 }
@@ -280,33 +294,22 @@ impl MarketDataStream {
                     Ok(symbol) => {
                         let id = generate_rand_string(16);
                         write.send(Message::Text(format!(r#"{{
-                            "method": "SUBSCRIBE",
-                            "params": [
-                                "{symbol}@trade",
-                                "{symbol}@depth@0ms"
-                            ],
-                            "id": "{id}"
+                            "method":"SUBSCRIBE",
+                            "params":["{symbol}@trade","{symbol}@depth@100ms"],
+                            "id":"{id}"
                         }}"#).into())).await?;
                     }
-                    Err(RecvError::Closed) => {
-                        return Ok(());
-                    }
+                    Err(RecvError::Closed) => return Ok(()),
                     Err(RecvError::Lagged(num)) => {
-                        error!("{num} subscription requests were missed.");
+                        error!(num, "Binance subscription requests were missed");
                     }
                 },
                 message = read.next() => match message {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<Stream>(&text) {
-                            Ok(Stream::EventStream(stream)) => {
-                                self.process_message(stream);
-                            }
-                            Ok(Stream::Result(result)) => {
-                                debug!(?result, "Subscription request response is received.");
-                            }
-                            Err(error) => {
-                                error!(?error, %text, "Couldn't parse Stream.");
-                            }
+                            Ok(Stream::EventStream(stream)) => self.process_message(stream),
+                            Ok(Stream::Result(result)) => debug!(?result, "Binance subscription response"),
+                            Err(error) => error!(?error, %text, "failed to parse Binance stream"),
                         }
                     }
                     Some(Ok(Message::Ping(data))) => {
@@ -315,18 +318,14 @@ impl MarketDataStream {
                     }
                     Some(Ok(Message::Close(close_frame))) => {
                         return Err(BinanceFuturesError::ConnectionAbort(
-                            close_frame.map(|f| f.to_string()).unwrap_or(String::new())
+                            close_frame.map(|f| f.to_string()).unwrap_or_default()
                         ));
                     }
                     Some(Ok(Message::Binary(_)))
                     | Some(Ok(Message::Frame(_)))
                     | Some(Ok(Message::Pong(_))) => {}
-                    Some(Err(error)) => {
-                        return Err(BinanceFuturesError::from(error));
-                    }
-                    None => {
-                        return Err(BinanceFuturesError::ConnectionInterrupted);
-                    }
+                    Some(Err(error)) => return Err(error.into()),
+                    None => return Err(BinanceFuturesError::ConnectionInterrupted),
                 }
             }
         }
