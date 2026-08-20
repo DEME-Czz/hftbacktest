@@ -2,7 +2,7 @@ use chrono::Utc;
 use hftbacktest::types::{OrdType, Side, TimeInForce};
 use serde::Deserialize;
 
-use super::msg::{rest, rest::PositionInformationV2};
+use super::msg::{rest, rest::PositionInformationV3};
 use crate::{
     binancefutures::{
         BinanceFuturesError,
@@ -37,42 +37,60 @@ impl BinanceFuturesClient {
         path: &str,
         query: String,
     ) -> Result<T, reqwest::Error> {
-        let resp = self
-            .client
+        self.client
             .get(format!("{}{}?{}", self.url, path, query))
             .header("Accept", "application/json")
             .send()
             .await?
             .json()
-            .await?;
-        Ok(resp)
+            .await
+    }
+
+    fn signed_query(&self, query: &str) -> String {
+        let timestamp = Utc::now().timestamp_millis();
+        if query.is_empty() {
+            format!("recvWindow=5000&timestamp={timestamp}")
+        } else {
+            format!("{query}&recvWindow=5000&timestamp={timestamp}")
+        }
     }
 
     async fn get<T: for<'a> Deserialize<'a>>(
         &self,
         path: &str,
-        mut query: String,
+        query: String,
     ) -> Result<T, reqwest::Error> {
-        let time = Utc::now().timestamp_millis() - 1000;
-        if !query.is_empty() {
-            query.push('&');
-        }
-        query.push_str("recvWindow=5000&timestamp=");
-        query.push_str(&time.to_string());
-        let signature = sign_hmac_sha256(&self.secret, &query);
-        let resp = self
-            .client
-            .get(format!(
-                "{}{}?{}&signature={}",
-                self.url, path, query, signature
-            ))
+        let signed_query = self.signed_query(&query);
+        let signature = sign_hmac_sha256(&self.secret, &signed_query);
+        self.client
+            .get(format!("{}{}?{}&signature={}", self.url, path, signed_query, signature))
             .header("Accept", "application/json")
             .header("X-MBX-APIKEY", &self.api_key)
             .send()
             .await?
             .json()
-            .await?;
-        Ok(resp)
+            .await
+    }
+
+    async fn signed_body_request<T: for<'a> Deserialize<'a>>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: String,
+    ) -> Result<T, reqwest::Error> {
+        let signed_query = self.signed_query("");
+        let sign_payload = format!("{signed_query}{body}");
+        let signature = sign_hmac_sha256(&self.secret, &sign_payload);
+        self.client
+            .request(method, format!("{}{}?{}&signature={}", self.url, path, signed_query, signature))
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("X-MBX-APIKEY", &self.api_key)
+            .body(body)
+            .send()
+            .await?
+            .json()
+            .await
     }
 
     async fn put<T: for<'a> Deserialize<'a>>(
@@ -80,23 +98,7 @@ impl BinanceFuturesClient {
         path: &str,
         body: String,
     ) -> Result<T, reqwest::Error> {
-        let time = Utc::now().timestamp_millis() - 1000;
-        let sign_body = format!("recvWindow=5000&timestamp={time}{body}");
-        let signature = sign_hmac_sha256(&self.secret, &sign_body);
-        let resp = self
-            .client
-            .put(format!(
-                "{}{}?recvWindow=5000&timestamp={}&signature={}",
-                self.url, path, time, signature
-            ))
-            .header("Accept", "application/json")
-            .header("X-MBX-APIKEY", &self.api_key)
-            .body(body)
-            .send()
-            .await?
-            .json()
-            .await?;
-        Ok(resp)
+        self.signed_body_request(reqwest::Method::PUT, path, body).await
     }
 
     async fn post<T: for<'a> Deserialize<'a>>(
@@ -104,23 +106,7 @@ impl BinanceFuturesClient {
         path: &str,
         body: String,
     ) -> Result<T, reqwest::Error> {
-        let time = Utc::now().timestamp_millis() - 1000;
-        let sign_body = format!("recvWindow=5000&timestamp={time}{body}");
-        let signature = sign_hmac_sha256(&self.secret, &sign_body);
-        let resp = self
-            .client
-            .post(format!(
-                "{}{}?recvWindow=5000&timestamp={}&signature={}",
-                self.url, path, time, signature
-            ))
-            .header("Accept", "application/json")
-            .header("X-MBX-APIKEY", &self.api_key)
-            .body(body)
-            .send()
-            .await?
-            .json()
-            .await?;
-        Ok(resp)
+        self.signed_body_request(reqwest::Method::POST, path, body).await
     }
 
     async fn delete<T: for<'a> Deserialize<'a>>(
@@ -128,33 +114,32 @@ impl BinanceFuturesClient {
         path: &str,
         body: String,
     ) -> Result<T, reqwest::Error> {
-        let time = Utc::now().timestamp_millis() - 1000;
-        let sign_body = format!("recvWindow=5000&timestamp={time}{body}");
-        let signature = sign_hmac_sha256(&self.secret, &sign_body);
-        let resp = self
-            .client
-            .delete(format!(
-                "{}{}?recvWindow=5000&timestamp={}&signature={}",
-                self.url, path, time, signature
-            ))
+        self.signed_body_request(reqwest::Method::DELETE, path, body).await
+    }
+
+    /// USER_STREAM endpoints require only the API key header and are not SIGNED endpoints.
+    async fn user_stream_request<T: for<'a> Deserialize<'a>>(
+        &self,
+        method: reqwest::Method,
+    ) -> Result<T, reqwest::Error> {
+        self.client
+            .request(method, format!("{}/fapi/v1/listenKey", self.url))
             .header("Accept", "application/json")
             .header("X-MBX-APIKEY", &self.api_key)
-            .body(body)
             .send()
             .await?
             .json()
-            .await?;
-        Ok(resp)
+            .await
     }
 
     pub async fn start_user_data_stream(&self) -> Result<String, reqwest::Error> {
-        let resp: Result<ListenKey, _> = self.post("/fapi/v1/listenKey", String::new()).await;
-        resp.map(|v| v.listen_key)
+        let resp: ListenKey = self.user_stream_request(reqwest::Method::POST).await?;
+        Ok(resp.listen_key)
     }
 
-    pub async fn keepalive_user_data_stream(&self) -> Result<(), reqwest::Error> {
-        let _: serde_json::Value = self.put("/fapi/v1/listenKey", String::new()).await?;
-        Ok(())
+    pub async fn keepalive_user_data_stream(&self) -> Result<String, reqwest::Error> {
+        let resp: ListenKey = self.user_stream_request(reqwest::Method::PUT).await?;
+        Ok(resp.listen_key)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -176,14 +161,16 @@ impl BinanceFuturesClient {
         body.push_str(symbol);
         body.push_str("&side=");
         body.push_str(side.as_ref());
-        body.push_str("&price=");
-        body.push_str(&format!("{price:.price_prec$}"));
+        if order_type == OrdType::Limit {
+            body.push_str("&price=");
+            body.push_str(&format!("{price:.price_prec$}"));
+            body.push_str("&timeInForce=");
+            body.push_str(time_in_force.as_ref());
+        }
         body.push_str("&quantity=");
         body.push_str(&format!("{qty:.5}"));
         body.push_str("&type=");
         body.push_str(order_type.as_ref());
-        body.push_str("&timeInForce=");
-        body.push_str(time_in_force.as_ref());
 
         let resp: OrderResponseResult = self.post("/fapi/v1/order", body).await?;
         match resp {
@@ -203,7 +190,7 @@ impl BinanceFuturesClient {
             return Err(BinanceFuturesError::InvalidRequest);
         }
         let mut body = String::with_capacity(2000 * orders.len());
-        body.push_str("{\"batchOrders\":[");
+        body.push_str("batchOrders=[");
         for (i, order) in orders.iter().enumerate() {
             if i > 0 {
                 body.push(',');
@@ -214,17 +201,19 @@ impl BinanceFuturesClient {
             body.push_str(&order.1);
             body.push_str("\",\"side\":\"");
             body.push_str(order.2.as_ref());
-            body.push_str("\",\"price\":\"");
-            body.push_str(&format!("{:.prec$}", order.3, prec = order.4));
+            if order.6 == OrdType::Limit {
+                body.push_str("\",\"price\":\"");
+                body.push_str(&format!("{:.prec$}", order.3, prec = order.4));
+                body.push_str("\",\"timeInForce\":\"");
+                body.push_str(order.7.as_ref());
+            }
             body.push_str("\",\"quantity\":\"");
             body.push_str(&format!("{:.5}", order.5));
             body.push_str("\",\"type\":\"");
             body.push_str(order.6.as_ref());
-            body.push_str("\",\"timeInForce\":\"");
-            body.push_str(order.7.as_ref());
             body.push_str("\"}");
         }
-        body.push_str("]}");
+        body.push(']');
 
         let resp: Vec<OrderResponseResult> = self.post("/fapi/v1/batchOrders", body).await?;
         Ok(resp
@@ -248,18 +237,10 @@ impl BinanceFuturesClient {
         price_prec: usize,
         qty: f64,
     ) -> Result<OrderResponse, BinanceFuturesError> {
-        let mut body = String::with_capacity(100);
-        body.push_str("symbol=");
-        body.push_str(symbol);
-        body.push_str("&origClientOrderId=");
-        body.push_str(client_order_id);
-        body.push_str("&side=");
-        body.push_str(side.as_ref());
-        body.push_str("&price=");
-        body.push_str(&format!("{price:.price_prec$}"));
-        body.push_str("&quantity=");
-        body.push_str(&format!("{qty:.5}"));
-
+        let body = format!(
+            "symbol={symbol}&origClientOrderId={client_order_id}&side={}&price={price:.price_prec$}&quantity={qty:.5}",
+            side.as_ref()
+        );
         let resp: OrderResponseResult = self.put("/fapi/v1/order", body).await?;
         match resp {
             OrderResponseResult::Ok(resp) => Ok(resp),
@@ -275,12 +256,7 @@ impl BinanceFuturesClient {
         client_order_id: &str,
         symbol: &str,
     ) -> Result<OrderResponse, BinanceFuturesError> {
-        let mut body = String::with_capacity(100);
-        body.push_str("symbol=");
-        body.push_str(symbol);
-        body.push_str("&origClientOrderId=");
-        body.push_str(client_order_id);
-
+        let body = format!("symbol={symbol}&origClientOrderId={client_order_id}");
         let resp: OrderResponseResult = self.delete("/fapi/v1/order", body).await?;
         match resp {
             OrderResponseResult::Ok(resp) => Ok(resp),
@@ -299,20 +275,10 @@ impl BinanceFuturesClient {
         if client_order_ids.len() > 10 {
             return Err(BinanceFuturesError::InvalidRequest);
         }
-        let mut body = String::with_capacity(100);
-        body.push_str("{\"symbol\":\"");
-        body.push_str(symbol);
-        body.push_str("\",\"origClientOrderIdList\":[");
-        for (i, client_order_id) in client_order_ids.iter().enumerate() {
-            if i > 0 {
-                body.push(',');
-            }
-            body.push('\"');
-            body.push_str(client_order_id);
-            body.push('\"');
-        }
-        body.push_str("]}");
-        let resp: Vec<OrderResponseResult> = self.post("/fapi/v1/batchOrders", body).await?;
+        let ids = serde_json::to_string(&client_order_ids)
+            .map_err(|_| BinanceFuturesError::InvalidRequest)?;
+        let body = format!("symbol={symbol}&origClientOrderIdList={ids}");
+        let resp: Vec<OrderResponseResult> = self.delete("/fapi/v1/batchOrders", body).await?;
         Ok(resp
             .into_iter()
             .map(|resp| match resp {
@@ -332,18 +298,16 @@ impl BinanceFuturesClient {
         Ok(())
     }
 
+    /// V3 replaces the deprecated V2 positionRisk endpoint and returns only symbols with
+    /// positions or open orders.
     pub async fn get_position_information(
         &self,
-    ) -> Result<Vec<PositionInformationV2>, reqwest::Error> {
-        let resp: Vec<PositionInformationV2> =
-            self.get("/fapi/v2/positionRisk", String::new()).await?;
-        Ok(resp)
+    ) -> Result<Vec<PositionInformationV3>, reqwest::Error> {
+        self.get("/fapi/v3/positionRisk", String::new()).await
     }
 
     pub async fn get_depth(&self, symbol: &str) -> Result<rest::Depth, reqwest::Error> {
-        let resp: rest::Depth = self
-            .get_noauth("/fapi/v1/depth", format!("symbol={symbol}&limit=1000"))
-            .await?;
-        Ok(resp)
+        self.get_noauth("/fapi/v1/depth", format!("symbol={symbol}&limit=1000"))
+            .await
     }
 }
