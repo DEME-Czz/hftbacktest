@@ -1,5 +1,8 @@
-# Binance Futures Demo endpoints
-stream_url = "wss://demo-fstream.binance.com/ws"
+# Binance Futures Demo endpoints.
+# Demo environments may not use the same public/private host split as production,
+# so both URLs are configurable independently.
+public_stream_url = "wss://demo-fstream.binance.com/ws"
+private_stream_url = "wss://demo-fstream.binance.com/ws/{listen_key}"
 api_url = "https://demo-fapi.binance.com"
 
 order_prefix = "test"
