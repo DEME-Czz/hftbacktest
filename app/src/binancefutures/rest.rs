@@ -78,15 +78,22 @@ impl BinanceFuturesClient {
         path: &str,
         body: String,
     ) -> Result<T, reqwest::Error> {
-        let signed_query = self.signed_query("");
-        let sign_payload = format!("{signed_query}{body}");
-        let signature = sign_hmac_sha256(&self.secret, &sign_payload);
+        let timestamp = Utc::now().timestamp_millis();
+        let mut params = body;
+        if !params.is_empty() {
+            params.push('&');
+        }
+        params.push_str(&format!("recvWindow=5000&timestamp={timestamp}"));
+        let signature = sign_hmac_sha256(&self.secret, &params);
+        params.push_str("&signature=");
+        params.push_str(&signature);
+
         self.client
-            .request(method, format!("{}{}?{}&signature={}", self.url, path, signed_query, signature))
+            .request(method, format!("{}{}", self.url, path))
             .header("Accept", "application/json")
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("X-MBX-APIKEY", &self.api_key)
-            .body(body)
+            .body(params)
             .send()
             .await?
             .json()
@@ -298,8 +305,6 @@ impl BinanceFuturesClient {
         Ok(())
     }
 
-    /// V3 replaces the deprecated V2 positionRisk endpoint and returns only symbols with
-    /// positions or open orders.
     pub async fn get_position_information(
         &self,
     ) -> Result<Vec<PositionInformationV3>, reqwest::Error> {
