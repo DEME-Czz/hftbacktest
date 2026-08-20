@@ -78,8 +78,8 @@ impl From<BinanceFuturesError> for Value {
 
 /// Binance USD-M configuration.
 ///
-/// Binance split Futures WebSocket traffic into dedicated public/private entry points in 2026.
-/// Keep these URLs separate; a single legacy `stream_url` is intentionally no longer supported.
+/// `public_stream_url` is the public market WebSocket entry point.
+/// `private_stream_url` is a complete URL template and must contain `{listen_key}`.
 #[derive(Deserialize)]
 pub struct Config {
     pub public_stream_url: String,
@@ -95,7 +95,6 @@ pub struct Config {
 
 type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
 
-/// Binance USD-M Futures adapter.
 pub struct BinanceFutures {
     config: Config,
     symbols: SharedSymbolSet,
@@ -137,7 +136,7 @@ impl BinanceFutures {
     }
 
     pub fn connect_user_data_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
-        let base_url = self.config.private_stream_url.clone();
+        let url_template = self.config.private_stream_url.clone();
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         let instruments = self.symbols.clone();
@@ -164,10 +163,7 @@ impl BinanceFutures {
                         symbol_tx.subscribe(),
                     );
                     let listen_key = stream.get_listen_key().await?;
-                    // 2026 private WebSocket endpoint: /private/ws?listenKey=...&events=...
-                    let url = format!(
-                        "{base_url}?listenKey={listen_key}&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE/TRADE_LITE/listenKeyExpired"
-                    );
+                    let url = url_template.replace("{listen_key}", &listen_key);
                     debug!("connecting Binance private user stream");
                     stream.connect(&url).await?;
                     Ok(())
@@ -182,6 +178,9 @@ impl ConnectorBuilder for BinanceFutures {
 
     fn build_from(config: &str) -> Result<Self, Self::Error> {
         let config: Config = toml::from_str(config)?;
+        if !config.private_stream_url.contains("{listen_key}") {
+            return Err(BinanceFuturesError::InvalidRequest);
+        }
         let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
         let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret);
         let (symbol_tx, _) = broadcast::channel(500);
