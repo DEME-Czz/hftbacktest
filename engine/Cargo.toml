@@ -1,25 +1,13 @@
 [package]
 name = "hftbacktest"
-version = "0.9.4"
+version = "0.10.0"
 edition = "2024"
-authors = ["nkaz001 <nkaz001@protonmail.com>"]
 license = "MIT"
-documentation = "https://docs.rs/hftbacktest/"
-repository = "https://github.com/nkaz001/hftbacktest/"
-readme = "README.md"
-description = "A high-frequency trading and market-making backtesting tool accounts for limit orders, queue positions, and latencies, utilizing full tick data for trades and order books."
-keywords = [
-    "quantitative",
-    "trading",
-    "backtesting",
-    "cryptocurrency",
-    "hft"
-]
-categories = ["finance", "mathematics", "science", "algorithms", "simulation"]
+description = "Rust order-book-driven HFT backtesting engine"
 rust-version = "1.91.1"
 
 [features]
-default = ["backtest", "live"]
+default = ["backtest"]
 backtest = ["zip", "uuid", "nom", "hftbacktest-derive"]
 live = ["chrono", "tokio", "futures-util", "iceoryx2", "rand", "toml", "serde"]
 
@@ -44,7 +32,3 @@ hftbacktest-derive = { path = "../hftbacktest-derive", optional = true, version 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3.22", features = [] }
 clap = { version = "4.5.53", features = ["derive"] }
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]

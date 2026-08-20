@@ -1,10 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-  "hftbacktest",
+  "engine",
   "hftbacktest-derive",
-  "collector",
-  "connector",
+  "app",
 ]
 
 [profile.dev]
