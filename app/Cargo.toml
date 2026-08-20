@@ -23,6 +23,3 @@ tracing-subscriber = "0.3.22"
 clap = { version = "4.5.53", features = ["derive"] }
 hashbrown = "0.16.1"
 rand = "0.9.2"
-base64 = "0.22.1"
-ed25519-dalek = { version = "2.2.0", features = ["serde", "zeroize", "rand_core", "digest", "pkcs8", "pem"] }
-flate2 = "1.1.5"
