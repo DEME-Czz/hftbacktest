@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-hftbacktest = { path = "../engine", default-features = false, features = ["backtest", "live"] }
+hftbacktest = { path = "../engine", default-features = false, features = ["backtest"] }
 tracing = "0.1.43"
 anyhow = "1.0.100"
 thiserror = "2.0.17"
