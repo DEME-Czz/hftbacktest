@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
 use hftbacktest::{
-    depth::{HashMapMarketDepth, L2MarketDepth, MarketDepth},
+    depth::{HashMapMarketDepth, L2MarketDepth},
     strategy::{MarketContext, Strategy, StrategyCommand},
-    types::{BUY_EVENT, DEPTH_CLEAR_EVENT, DEPTH_EVENT, Event, LiveEvent, Order, OrderId, SELL_EVENT, Side, TRADE_EVENT},
+    types::{
+        BUY_EVENT, DEPTH_CLEAR_EVENT, DEPTH_EVENT, Event, LiveEvent, Order, OrderId, SELL_EVENT,
+        Side, TRADE_EVENT,
+    },
 };
 
 /// In-process normalized market/account state used by live strategies.
@@ -40,28 +43,39 @@ where
             LiveEvent::Feed { symbol, event } if symbol == &self.symbol => {
                 self.timestamp = event.local_ts;
                 if event.is(DEPTH_EVENT | BUY_EVENT) {
-                    self.depth.update_bid_depth(event.px, event.qty, event.local_ts);
+                    self.depth
+                        .update_bid_depth(event.px, event.qty, event.local_ts);
                     false
                 } else if event.is(DEPTH_EVENT | SELL_EVENT) {
-                    self.depth.update_ask_depth(event.px, event.qty, event.local_ts);
+                    self.depth
+                        .update_ask_depth(event.px, event.qty, event.local_ts);
                     false
                 } else if event.is(DEPTH_CLEAR_EVENT) {
                     self.depth.clear_depth(Side::None, 0.0);
                     false
                 } else if event.is(TRADE_EVENT) {
                     self.last_trades.push(event.clone());
-                    if self.last_trades.len() > 1024 { self.last_trades.remove(0); }
+                    if self.last_trades.len() > 1024 {
+                        self.last_trades.remove(0);
+                    }
                     true
                 } else {
                     false
                 }
             }
             LiveEvent::Order { symbol, order } if symbol == &self.symbol => {
-                if order.active() { self.orders.insert(order.order_id, order.clone()); }
-                else { self.orders.remove(&order.order_id); }
+                if order.active() {
+                    self.orders.insert(order.order_id, order.clone());
+                } else {
+                    self.orders.remove(&order.order_id);
+                }
                 true
             }
-            LiveEvent::Position { symbol, qty, exch_ts } if symbol == &self.symbol => {
+            LiveEvent::Position {
+                symbol,
+                qty,
+                exch_ts,
+            } if symbol == &self.symbol => {
                 self.position = *qty;
                 self.timestamp = *exch_ts;
                 true
@@ -81,14 +95,23 @@ where
         self.strategy.on_event(&context)
     }
 
-    pub fn depth(&self) -> &HashMapMarketDepth { &self.depth }
-    pub fn position(&self) -> f64 { self.position }
+    pub fn depth(&self) -> &HashMapMarketDepth {
+        &self.depth
+    }
+
+    pub fn position(&self) -> f64 {
+        self.position
+    }
 }
 
 /// Safe default strategy for runtime smoke testing. It never creates an order.
 pub struct NoopStrategy;
+
 impl Strategy<HashMapMarketDepth> for NoopStrategy {
-    fn on_event(&mut self, _context: &MarketContext<'_, HashMapMarketDepth>) -> Vec<StrategyCommand> {
+    fn on_event(
+        &mut self,
+        _context: &MarketContext<'_, HashMapMarketDepth>,
+    ) -> Vec<StrategyCommand> {
         Vec::new()
     }
 }
