@@ -4,17 +4,15 @@ use std::{
     path::Path,
 };
 
-use hftbacktest_derive::NpyDTyped;
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    backtest::data::{POD, write_npy},
+    backtest::data::{Field, NpyDTyped, POD, write_npy},
     depth::MarketDepth,
     types::{Bot, Recorder},
 };
 
 #[repr(C)]
-#[derive(NpyDTyped)]
 struct Record {
     timestamp: i64,
     price: f64,
@@ -28,8 +26,28 @@ struct Record {
 
 unsafe impl POD for Record {}
 
-/// Provides recording of the backtesting strategy's state values, which are needed to compute
-/// performance metrics.
+impl NpyDTyped for Record {
+    fn descr() -> Vec<Field> {
+        let endian = if cfg!(target_endian = "little") { "<" } else { ">" };
+        [
+            ("timestamp", "i8"),
+            ("price", "f8"),
+            ("position", "f8"),
+            ("balance", "f8"),
+            ("fee", "f8"),
+            ("num_trades", "i8"),
+            ("trading_volume", "f8"),
+            ("trading_value", "f8"),
+        ]
+        .into_iter()
+        .map(|(name, ty)| Field {
+            name: name.to_string(),
+            ty: format!("{endian}{ty}"),
+        })
+        .collect()
+    }
+}
+
 pub struct BacktestRecorder {
     values: Vec<Vec<Record>>,
 }
@@ -47,8 +65,7 @@ impl Recorder for BacktestRecorder {
             let depth = hbt.depth(asset_no);
             let mid_price = (depth.best_bid() + depth.best_ask()) / 2.0;
             let state_values = hbt.state_values(asset_no);
-            let values = unsafe { self.values.get_unchecked_mut(asset_no) };
-            values.push(Record {
+            self.values[asset_no].push(Record {
                 timestamp,
                 price: mid_price,
                 balance: state_values.balance,
@@ -64,27 +81,16 @@ impl Recorder for BacktestRecorder {
 }
 
 impl BacktestRecorder {
-    /// Constructs an instance of `BacktestRecorder`.
     pub fn new<I, MD>(hbt: &I) -> Self
     where
         MD: MarketDepth,
         I: Bot<MD>,
     {
         Self {
-            values: {
-                let mut vec = Vec::with_capacity(hbt.num_assets());
-                for _ in 0..hbt.num_assets() {
-                    vec.push(Vec::new());
-                }
-                vec
-            },
+            values: (0..hbt.num_assets()).map(|_| Vec::new()).collect(),
         }
     }
 
-    /// Saves record data into a CSV file at the specified path. It creates a separate CSV file for
-    /// each asset, with the filename `{prefix}_{asset_no}.csv`.
-    /// The columns are `timestamp`, `mid`, `balance`, `position`, `fee`, `trade_num`,
-    /// `trade_amount`, `trade_qty`.
     pub fn to_csv<Prefix, P>(&self, prefix: Prefix, path: P) -> Result<(), Error>
     where
         Prefix: AsRef<str>,
@@ -123,18 +129,14 @@ impl BacktestRecorder {
         P: AsRef<Path>,
     {
         let file = File::create(path)?;
-
         let mut zip = ZipWriter::new(file);
-
         let options = SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::DEFLATE)
             .compression_level(Some(9));
-
         for (asset_no, values) in self.values.iter().enumerate() {
             zip.start_file(format!("{asset_no}.npy"), options)?;
             write_npy(&mut zip, values)?;
         }
-
         zip.finish()?;
         Ok(())
     }
