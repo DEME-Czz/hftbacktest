@@ -2,8 +2,8 @@ use std::{io::Error as IoError, mem};
 
 use crate::{
     backtest::{
+        data::{Data, DataPreprocess, DataSource, Field, NpyDTyped, POD, Reader},
         BacktestError,
-        data::{Data, DataPreprocess, DataSource, POD, Reader, npy::{DType, Field, NpyDTyped}},
     },
     types::Order,
 };
@@ -22,13 +22,21 @@ pub struct ConstantLatency {
 
 impl ConstantLatency {
     pub fn new(entry_latency: i64, response_latency: i64) -> Self {
-        Self { entry_latency, response_latency }
+        Self {
+            entry_latency,
+            response_latency,
+        }
     }
 }
 
 impl LatencyModel for ConstantLatency {
-    fn entry(&mut self, _timestamp: i64, _order: &Order) -> i64 { self.entry_latency }
-    fn response(&mut self, _timestamp: i64, _order: &Order) -> i64 { self.response_latency }
+    fn entry(&mut self, _timestamp: i64, _order: &Order) -> i64 {
+        self.entry_latency
+    }
+
+    fn response(&mut self, _timestamp: i64, _order: &Order) -> i64 {
+        self.response_latency
+    }
 }
 
 #[repr(C, align(32))]
@@ -43,12 +51,24 @@ pub struct OrderLatencyRow {
 unsafe impl POD for OrderLatencyRow {}
 
 impl NpyDTyped for OrderLatencyRow {
-    fn descr() -> DType {
+    fn descr() -> Vec<Field> {
         vec![
-            Field { name: "req_ts".into(), ty: "<i8".into() },
-            Field { name: "exch_ts".into(), ty: "<i8".into() },
-            Field { name: "resp_ts".into(), ty: "<i8".into() },
-            Field { name: "_padding".into(), ty: "<i8".into() },
+            Field {
+                name: "req_ts".into(),
+                ty: "<i8".into(),
+            },
+            Field {
+                name: "exch_ts".into(),
+                ty: "<i8".into(),
+            },
+            Field {
+                name: "resp_ts".into(),
+                ty: "<i8".into(),
+            },
+            Field {
+                name: "_padding".into(),
+                ty: "<i8".into(),
+            },
         ]
     }
 }
@@ -69,7 +89,10 @@ impl IntpOrderLatency {
         latency_offset: i64,
     ) -> Result<Self, BacktestError> {
         let mut reader = if latency_offset == 0 {
-            Reader::builder().parallel_load(parallel_load).data(data).build()?
+            Reader::builder()
+                .parallel_load(parallel_load)
+                .data(data)
+                .build()?
         } else {
             Reader::builder()
                 .parallel_load(parallel_load)
@@ -87,7 +110,13 @@ impl IntpOrderLatency {
             Err(BacktestError::EndOfData) => Data::empty(),
             Err(e) => return Err(e),
         };
-        Ok(Self { entry_rn: 0, resp_rn: 0, reader, data, next_data })
+        Ok(Self {
+            entry_rn: 0,
+            resp_rn: 0,
+            reader,
+            data,
+            next_data,
+        })
     }
 
     pub fn new(data: Vec<DataSource<OrderLatencyRow>>, latency_offset: i64) -> Self {
@@ -118,7 +147,9 @@ impl IntpOrderLatency {
 impl LatencyModel for IntpOrderLatency {
     fn entry(&mut self, timestamp: i64, _order: &Order) -> i64 {
         let first_row = &self.data[0];
-        if timestamp < first_row.req_ts { return first_row.exch_ts - first_row.req_ts; }
+        if timestamp < first_row.req_ts {
+            return first_row.exch_ts - first_row.req_ts;
+        }
         loop {
             let row = &self.data[self.entry_rn];
             let next_row = if self.entry_rn + 1 < self.data.len() {
@@ -139,7 +170,9 @@ impl LatencyModel for IntpOrderLatency {
                 let lat2 = next_row.exch_ts - next_row.req_ts;
                 return self.intp(timestamp, row.req_ts, lat1, next_row.req_ts, lat2);
             } else if self.entry_rn == self.data.len() - 1 {
-                if self.next_data().unwrap() { self.entry_rn = 0; }
+                if self.next_data().unwrap() {
+                    self.entry_rn = 0;
+                }
             } else {
                 self.entry_rn += 1;
             }
@@ -148,7 +181,9 @@ impl LatencyModel for IntpOrderLatency {
 
     fn response(&mut self, timestamp: i64, _order: &Order) -> i64 {
         let first_row = &self.data[0];
-        if timestamp < first_row.exch_ts { return first_row.resp_ts - first_row.exch_ts; }
+        if timestamp < first_row.exch_ts {
+            return first_row.resp_ts - first_row.exch_ts;
+        }
         loop {
             let row = &self.data[self.resp_rn];
             let next_row = if self.resp_rn + 1 < self.data.len() {
@@ -166,7 +201,9 @@ impl LatencyModel for IntpOrderLatency {
                 assert!(lat >= 0);
                 return lat;
             } else if self.resp_rn == self.data.len() - 1 {
-                if self.next_data().unwrap() { self.resp_rn = 0; }
+                if self.next_data().unwrap() {
+                    self.resp_rn = 0;
+                }
             } else {
                 self.resp_rn += 1;
             }
@@ -175,10 +212,14 @@ impl LatencyModel for IntpOrderLatency {
 }
 
 #[derive(Clone)]
-struct OrderLatencyAdjustment { latency_offset: i64 }
+struct OrderLatencyAdjustment {
+    latency_offset: i64,
+}
 
 impl OrderLatencyAdjustment {
-    fn new(latency_offset: i64) -> Self { Self { latency_offset } }
+    fn new(latency_offset: i64) -> Self {
+        Self { latency_offset }
+    }
 }
 
 impl DataPreprocess<OrderLatencyRow> for OrderLatencyAdjustment {
