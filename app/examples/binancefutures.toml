@@ -1,14 +1,12 @@
-# Testnet: wss://fstream.binancefuture.com/ws
-# Mainnet: wss://fstream.binance.com/ws
-# Private: wss://fstream-auth.binance.com/ws
-# Low-Latency Market Maker: wss://fstream-mm.binance.com/ws
-stream_url = "wss://fstream.binancefuture.com/ws"
+# Binance USD-M Futures production endpoints (2026 WebSocket migration).
+# High-frequency order book/trade streams use the public endpoint.
+public_stream_url = "wss://fstream.binance.com/public/ws"
 
-# Testnet: https://testnet.binancefuture.com
-# Mainnet: https://fapi.binance.com
-# Low-Latency Market Maker: https://fapi-mm.binance.com
-api_url = "https://testnet.binancefuture.com"
+# User Data Stream uses the private endpoint. `{listen_key}` is replaced at runtime.
+private_stream_url = "wss://fstream.binance.com/private/ws?listenKey={listen_key}&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE/TRADE_LITE/listenKeyExpired"
 
-order_prefix = "test"
+api_url = "https://fapi.binance.com"
+
+order_prefix = "hft"
 api_key = ""
 secret = ""
