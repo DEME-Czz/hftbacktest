@@ -1,18 +1,12 @@
 use std::{fs::read_to_string, process::exit};
 
 use clap::Parser;
-use tokio::{select, signal, sync::mpsc::unbounded_channel};
-use tracing::{error, info};
-
-use crate::{
+use hft_app::{
     binancefutures::BinanceFutures,
     connector::{Connector, ConnectorBuilder, PublishEvent},
 };
-
-mod binancefutures;
-mod bybit;
-mod connector;
-mod utils;
+use tokio::{select, signal, sync::mpsc::unbounded_channel};
+use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Binance USD-M Futures in-process runtime")]
@@ -60,9 +54,7 @@ async fn main() {
             }
             event = rx.recv() => {
                 match event {
-                    Some(PublishEvent::LiveEvent(event)) => {
-                        tracing::debug!(?event, "runtime event");
-                    }
+                    Some(PublishEvent::LiveEvent(event)) => tracing::debug!(?event, "runtime event"),
                     Some(PublishEvent::BatchStart(_)) | Some(PublishEvent::BatchEnd(_)) => {}
                     Some(PublishEvent::RegisterInstrument { .. }) => {}
                     None => break,
