@@ -1,20 +1,26 @@
 # HFT Backtest
 
-Rust 订单簿驱动的高频交易系统，目标市场为 Binance USD-M Futures。
+面向 Binance USD-M Futures 的 Rust 订单簿高频交易项目。
 
-核心边界：
-
-- L2 OrderBook + Trade Tick
-- Queue / Latency / Partial Fill / Fee
-- 确定性 Market Replay Backtest
-- Rust Strategy API
-- Binance USD-M Futures Live / Collector
-
-仓库结构：
+## 核心边界
 
 ```text
-engine/  # 纯 HFT 回测与微观结构计算核心
-app/     # Binance I/O、Live Runtime、Collector、CLI
+Binance Market WS ─┐
+                   ├─ Normalized Event ─ L2 OrderBook ─ Strategy
+Binance User WS ───┘                         │
+                                             ├─ Backtest: Queue + Latency + Partial Fill + Fee
+                                             └─ Live: Binance Order Manager
 ```
 
-重构原则：Engine 不依赖交易所、HTTP/WebSocket、AWS 或 Python；策略不依赖 Binance 协议。
+项目不是“做市专用框架”。做市、Order Book Imbalance、Order Flow、短周期 Momentum 等策略都通过同一个 exchange-independent Strategy API 使用订单簿状态。
+
+## 仓库
+
+```text
+engine/  纯计算：Event、Order、L2 Depth、Queue、Latency、Fill、Fee、Backtest、Strategy API
+app/     I/O：Binance USD-M WS/REST、账户/订单、Collector、Live Runtime
+```
+
+明确不包含：Python、S3/AWS、L3 Market-By-Order、Bybit/Spot/Hyperliquid、Iceoryx IPC、Jupyter/ReadTheDocs。
+
+详细设计见 `docs/`。
