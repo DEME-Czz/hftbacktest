@@ -66,11 +66,130 @@ impl LiveExecutor {
                     }
                 }
                 StrategyCommand::Modify { order_id, .. } => {
-                    // Current Binance Connector contract deliberately exposes submit/cancel only.
-                    // Keep this explicit so future strategies cannot silently assume live modify.
                     warn!(symbol = runtime.symbol(), order_id, "live modify is not implemented; command rejected");
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use hftbacktest::{
+        strategy::{BuiltinStrategy, BuiltinStrategyConfig, GridConfig},
+        types::{Event, LiveEvent, Order, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT},
+    };
+    use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+
+    use super::LiveExecutor;
+    use crate::{
+        connector::{Connector, GetOrders, PublishEvent},
+        risk::{RiskConfig, RiskGate},
+        runtime::LiveStrategyRuntime,
+    };
+
+    #[derive(Default)]
+    struct EmptyOrders;
+    impl GetOrders for EmptyOrders {
+        fn orders(&self, _symbol: Option<String>) -> Vec<Order> { Vec::new() }
+    }
+
+    #[derive(Clone, Default)]
+    struct FakeConnector {
+        submitted: Arc<Mutex<Vec<(String, Order)>>>,
+        canceled: Arc<Mutex<Vec<(String, Order)>>>,
+    }
+
+    impl Connector for FakeConnector {
+        fn register(&mut self, _symbol: String) {}
+        fn order_manager(&self) -> Arc<Mutex<dyn GetOrders + Send + 'static>> {
+            Arc::new(Mutex::new(EmptyOrders))
+        }
+        fn run(&mut self, _tx: UnboundedSender<PublishEvent>) {}
+        fn submit(&self, symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
+            self.submitted.lock().unwrap().push((symbol, order));
+        }
+        fn cancel(&self, symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
+            self.canceled.lock().unwrap().push((symbol, order));
+        }
+    }
+
+    fn runtime() -> LiveStrategyRuntime<BuiltinStrategy> {
+        let strategy = BuiltinStrategy::from_config(BuiltinStrategyConfig::Grid(GridConfig {
+            relative_half_spread: 0.0005,
+            relative_grid_interval: 0.0005,
+            grid_num: 2,
+            min_grid_step: 0.1,
+            skew: 0.00025,
+            order_qty: 0.001,
+            max_position: 0.003,
+        }))
+        .unwrap();
+        let mut runtime = LiveStrategyRuntime::new("btcusdt", 0.1, 0.001, strategy);
+        runtime.apply(&LiveEvent::Feed {
+            symbol: "btcusdt".to_string(),
+            event: Event {
+                ev: LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 1,
+                local_ts: 1,
+                px: 100.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+        });
+        runtime.apply(&LiveEvent::Feed {
+            symbol: "btcusdt".to_string(),
+            event: Event {
+                ev: LOCAL_ASK_DEPTH_EVENT,
+                exch_ts: 1,
+                local_ts: 1,
+                px: 101.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+        });
+        runtime
+    }
+
+    #[test]
+    fn execute_stages_orders_and_prevents_duplicate_grid_submits() {
+        let connector = FakeConnector::default();
+        let (tx, _rx) = unbounded_channel();
+        let executor = LiveExecutor::new(
+            true,
+            RiskGate::new(RiskConfig {
+                max_order_qty: 0.001,
+                max_order_notional: 1.0,
+                max_position: 0.003,
+                max_open_orders: 4,
+            }),
+        );
+        let mut runtime = runtime();
+        let commands = runtime.decide();
+        assert!(!commands.is_empty());
+        executor.execute(&connector, &tx, &mut runtime, commands);
+        assert_eq!(connector.submitted.lock().unwrap().len(), 4);
+        assert_eq!(runtime.open_orders(), 4);
+
+        let next = runtime.decide();
+        assert!(next.is_empty());
+    }
+
+    #[test]
+    fn dry_run_never_submits_orders() {
+        let connector = FakeConnector::default();
+        let (tx, _rx) = unbounded_channel();
+        let executor = LiveExecutor::new(false, RiskGate::new(RiskConfig::default()));
+        let mut runtime = runtime();
+        let commands = runtime.decide();
+        executor.execute(&connector, &tx, &mut runtime, commands);
+        assert!(connector.submitted.lock().unwrap().is_empty());
+        assert_eq!(runtime.open_orders(), 0);
     }
 }
