@@ -117,6 +117,7 @@ async fn main() {
     }
 
     let executor = LiveExecutor::new(args.execute, RiskGate::new(runtime_config.risk));
+    let mut position_ready = HashSet::new();
 
     info!(execute = args.execute, symbols = runtimes.len(), "Binance USD-M Futures strategy runtime started");
     if !args.execute {
@@ -152,6 +153,11 @@ async fn main() {
                 match event {
                     Some(PublishEvent::LiveEvent(live)) => {
                         trace!(?live, "runtime event");
+                        if let LiveEvent::Position { symbol, .. } = &live {
+                            if runtimes.contains_key(symbol) && position_ready.insert(symbol.clone()) {
+                                info!(%symbol, "initial position state synchronized");
+                            }
+                        }
                         if let Some(symbol) = live_symbol(&live)
                             && let Some(runtime) = runtimes.get_mut(symbol)
                         {
@@ -164,6 +170,10 @@ async fn main() {
                     Some(PublishEvent::BatchEnd(_)) => {
                         for runtime in runtimes.values_mut() {
                             if !runtime.take_depth_dirty() {
+                                continue;
+                            }
+                            if args.execute && !position_ready.contains(runtime.symbol()) {
+                                trace!(symbol = runtime.symbol(), "waiting for initial position synchronization");
                                 continue;
                             }
                             let commands = runtime.decide();
