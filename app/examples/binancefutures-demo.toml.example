@@ -1,14 +1,14 @@
-# Binance USD-M Futures Demo trading configuration.
+# Binance USD-M Futures Testnet configuration.
 #
-# Public market data does not require authentication. Use the standard production
-# USD-M Futures raw WebSocket endpoint for continuous BTCUSDT depth/trade data.
-public_stream_url = "wss://fstream.binance.com/ws"
+# Public market WebSocket (USD-M Testnet). This client connects to /ws and then
+# sends SUBSCRIBE requests for trade + diff-depth streams.
+public_stream_url = "wss://stream.binancefuture.com/ws"
 
-# Demo private user-data stream. {listen_key} is replaced at runtime.
-private_stream_url = "wss://demo-fstream.binance.com/ws/{listen_key}"
+# Testnet private user-data stream. {listen_key} is replaced at runtime.
+private_stream_url = "wss://stream.binancefuture.com/ws/{listen_key}"
 
-# Demo REST API for positions/orders/account operations.
-api_url = "https://demo-fapi.binance.com"
+# USD-M Futures Testnet REST API.
+api_url = "https://testnet.binancefuture.com"
 
 order_prefix = "hfttest"
 api_key = ""
