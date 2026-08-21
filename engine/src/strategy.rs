@@ -5,8 +5,10 @@ use crate::{
     types::{Bot, Event, OrdType, Order, OrderId, OrderRequest, Side, TimeInForce},
 };
 
+pub mod builtin;
 pub mod grid;
 
+pub use builtin::{BuiltinStrategy, BuiltinStrategyConfig};
 pub use grid::{GridConfig, GridStrategy};
 
 /// Exchange-independent read-only state presented to a strategy.
