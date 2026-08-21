@@ -25,7 +25,7 @@ use crate::{
         rest::BinanceFuturesClient,
     },
     connector::{Connector, ConnectorBuilder, GetOrders, PublishEvent},
-    utils::{ExponentialBackoff, Retry},
+    utils::{BackoffStrategy, ExponentialBackoff, Retry},
 };
 
 #[derive(Error, Debug)]
@@ -103,36 +103,27 @@ impl BinanceFutures {
     pub fn connect_market_data_stream(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
         let base_url = self.config.public_stream_url.clone();
         let client = self.client.clone();
-        let symbol_tx = self.symbol_tx.clone();
-        // Subscribe before spawning. This guarantees register() has at least one receiver
-        // immediately after this method returns and removes the startup race.
-        let initial_symbol_rx = self.symbol_tx.subscribe();
+        let symbol_rx = self.symbol_tx.subscribe();
+
+        // Construct the stream before spawning so register() always observes at least one
+        // broadcast receiver. Reconnect reuses the same receiver and stream state.
+        let mut stream = market_data_stream::MarketDataStream::new(client, ev_tx.clone(), symbol_rx);
 
         tokio::spawn(async move {
-            let mut initial_symbol_rx = Some(initial_symbol_rx);
-            let _ = Retry::new(ExponentialBackoff::default())
-                .error_handler(|error: BinanceFuturesError| {
-                    error!(?error, "market data stream connection interrupted");
-                    let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                        ErrorKind::ConnectionInterrupted,
-                        error.into(),
-                    ))));
-                    Ok(())
-                })
-                .retry(|| async {
-                    let symbol_rx = initial_symbol_rx
-                        .take()
-                        .unwrap_or_else(|| symbol_tx.subscribe());
-                    let mut stream = market_data_stream::MarketDataStream::new(
-                        client.clone(),
-                        ev_tx.clone(),
-                        symbol_rx,
-                    );
-                    debug!(%base_url, "connecting Binance public market stream");
-                    stream.connect(&base_url).await?;
-                    Ok(())
-                })
-                .await;
+            let mut backoff = ExponentialBackoff::default();
+            loop {
+                debug!(%base_url, "connecting Binance public market stream");
+                match stream.connect(&base_url).await {
+                    Ok(()) => break,
+                    Err(error) => {
+                        error!(?error, "market data stream connection interrupted");
+                        let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Error(
+                            LiveError::with(ErrorKind::ConnectionInterrupted, error.into()),
+                        )));
+                        tokio::time::sleep(backoff.backoff()).await;
+                    }
+                }
+            }
         });
     }
 
@@ -204,12 +195,8 @@ impl Connector for BinanceFutures {
     fn register(&mut self, symbol: String) {
         let symbol = symbol.to_lowercase();
         let mut symbols = self.symbols.lock().unwrap();
-        if symbols.insert(symbol.clone()) {
-            // A missing receiver is not a fatal condition. The symbol remains in the authoritative
-            // symbol set and can be replayed/re-registered by the runtime after reconnect.
-            if self.symbol_tx.send(symbol.clone()).is_err() {
-                warn!(%symbol, "symbol registered before a stream receiver was ready");
-            }
+        if symbols.insert(symbol.clone()) && self.symbol_tx.send(symbol.clone()).is_err() {
+            warn!(%symbol, "symbol registered without an active market stream receiver");
         }
     }
 
