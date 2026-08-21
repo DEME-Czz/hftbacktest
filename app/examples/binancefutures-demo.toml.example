@@ -1,10 +1,16 @@
-# Binance Futures Demo endpoints.
-# Demo environments may not use the same public/private host split as production,
-# so both URLs are configurable independently.
-public_stream_url = "wss://demo-fstream.binance.com/ws"
+# Binance USD-M Futures Demo trading configuration.
+#
+# Public market data does not require authentication. We intentionally use the
+# production public stream here so collector/backtest input has continuous real
+# BTCUSDT depth/trade data, while account/order execution remains in Demo.
+public_stream_url = "wss://fstream.binance.com/public/ws"
+
+# Demo private user-data stream. {listen_key} is replaced at runtime.
 private_stream_url = "wss://demo-fstream.binance.com/ws/{listen_key}"
+
+# Demo REST API for positions/orders/account operations.
 api_url = "https://demo-fapi.binance.com"
 
-order_prefix = "test"
+order_prefix = "hfttest"
 api_key = ""
 secret = ""
