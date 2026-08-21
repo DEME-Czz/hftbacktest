@@ -1,9 +1,10 @@
-# Binance USD-M Futures production endpoints (2026 WebSocket migration).
-# High-frequency order book/trade streams use the public endpoint.
-public_stream_url = "wss://fstream.binance.com/public/ws"
+# Binance USD-M Futures production endpoints.
+# This client connects and sends SUBSCRIBE requests, so use the combined-request
+# public stream endpoint.
+public_stream_url = "wss://fstream.binance.com/public/stream"
 
 # User Data Stream uses the private endpoint. `{listen_key}` is replaced at runtime.
-private_stream_url = "wss://fstream.binance.com/private/ws?listenKey={listen_key}&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE/TRADE_LITE/listenKeyExpired"
+private_stream_url = "wss://fstream.binance.com/private/ws/{listen_key}"
 
 api_url = "https://fapi.binance.com"
 
