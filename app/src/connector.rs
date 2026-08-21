@@ -31,7 +31,6 @@ pub trait Connector {
     fn order_manager(&self) -> Arc<Mutex<dyn GetOrders + Send + 'static>>;
     fn run(&mut self, tx: UnboundedSender<PublishEvent>);
     fn submit(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>);
-    fn modify(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>);
     fn cancel(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>);
 }
 
