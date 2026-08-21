@@ -1,9 +1,8 @@
 # Binance USD-M Futures Demo trading configuration.
 #
-# Public market data does not require authentication. We intentionally use the
-# production public stream here so collector/backtest input has continuous real
-# BTCUSDT depth/trade data, while account/order execution remains in Demo.
-public_stream_url = "wss://fstream.binance.com/public/ws"
+# Public market data does not require authentication. Use the standard production
+# USD-M Futures raw WebSocket endpoint for continuous BTCUSDT depth/trade data.
+public_stream_url = "wss://fstream.binance.com/ws"
 
 # Demo private user-data stream. {listen_key} is replaced at runtime.
 private_stream_url = "wss://demo-fstream.binance.com/ws/{listen_key}"
