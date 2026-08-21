@@ -1,15 +1,29 @@
 # Binance USD-M Futures Testnet configuration.
-#
-# Public market WebSocket (USD-M Testnet). This client connects to /ws and then
-# sends SUBSCRIBE requests for trade + diff-depth streams.
 public_stream_url = "wss://stream.binancefuture.com/ws"
-
-# Testnet private user-data stream. {listen_key} is replaced at runtime.
 private_stream_url = "wss://stream.binancefuture.com/ws/{listen_key}"
-
-# USD-M Futures Testnet REST API.
 api_url = "https://testnet.binancefuture.com"
 
 order_prefix = "hfttest"
 api_key = ""
 secret = ""
+
+# Global live risk gate. These values are intentionally conservative for BTCUSDT testnet.
+[risk]
+max_order_qty = 0.001
+max_order_notional = 100.0
+max_position = 0.003
+max_open_orders = 4
+
+# One built-in strategy per symbol. Add another [[strategies]] block for another symbol.
+[[strategies]]
+symbol = "BTCUSDT"
+kind = "grid"
+tick_size = 0.1
+lot_size = 0.001
+relative_half_spread = 0.0005
+relative_grid_interval = 0.0005
+grid_num = 2
+min_grid_step = 0.1
+skew = 0.00025
+order_qty = 0.001
+max_position = 0.003
