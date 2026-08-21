@@ -7,8 +7,8 @@ use hftbacktest::{
         StrategyCommand,
     },
     types::{
-        BUY_EVENT, DEPTH_CLEAR_EVENT, DEPTH_EVENT, Event, LiveEvent, OrdType, Order, OrderId, SELL_EVENT,
-        Side, Status, TRADE_EVENT, TimeInForce,
+        BUY_EVENT, DEPTH_CLEAR_EVENT, DEPTH_EVENT, Event, LiveEvent, OrdType, Order, OrderId,
+        SELL_EVENT, Side, Status, TRADE_EVENT, TimeInForce,
     },
 };
 use serde::Deserialize;
@@ -72,9 +72,6 @@ impl LiveStrategyConfig {
 }
 
 /// In-process normalized market/account state used by live strategies.
-///
-/// The runtime owns only normalized state. Exchange transport stays in the connector and strategy
-/// decisions stay in the engine strategy layer.
 pub struct LiveStrategyRuntime<S> {
     symbol: String,
     depth: HashMapMarketDepth,
@@ -83,6 +80,7 @@ pub struct LiveStrategyRuntime<S> {
     last_trades: Vec<Event>,
     strategy: S,
     timestamp: i64,
+    depth_dirty: bool,
 }
 
 impl<S> LiveStrategyRuntime<S>
@@ -98,26 +96,27 @@ where
             last_trades: Vec::with_capacity(1024),
             strategy,
             timestamp: 0,
+            depth_dirty: false,
         }
     }
 
     pub fn symbol(&self) -> &str { &self.symbol }
 
-    /// Applies a normalized live event. Depth updates only mutate state; decision should happen at
-    /// the matching `PublishEvent::BatchEnd(symbol)` so the strategy observes one complete Binance
-    /// depth batch.
     pub fn apply(&mut self, live: &LiveEvent) -> bool {
         match live {
             LiveEvent::Feed { symbol, event } if symbol == &self.symbol => {
                 self.timestamp = event.local_ts;
                 if event.is(DEPTH_EVENT | BUY_EVENT) {
                     self.depth.update_bid_depth(event.px, event.qty, event.local_ts);
+                    self.depth_dirty = true;
                     false
                 } else if event.is(DEPTH_EVENT | SELL_EVENT) {
                     self.depth.update_ask_depth(event.px, event.qty, event.local_ts);
+                    self.depth_dirty = true;
                     false
                 } else if event.is(DEPTH_CLEAR_EVENT) {
                     self.depth.clear_depth(Side::None, 0.0);
+                    self.depth_dirty = true;
                     false
                 } else if event.is(TRADE_EVENT) {
                     self.last_trades.push(event.clone());
@@ -146,6 +145,11 @@ where
         }
     }
 
+    /// Returns true once for each depth batch that changed this symbol.
+    pub fn take_depth_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.depth_dirty)
+    }
+
     pub fn decide(&mut self) -> Vec<StrategyCommand> {
         let context = MarketContext {
             timestamp: self.timestamp,
@@ -157,8 +161,6 @@ where
         self.strategy.on_event(&context)
     }
 
-    /// Stages a local pending submit before the asynchronous REST request is started. This prevents
-    /// the next 100ms depth batch from generating the same order again while REST/WS is in flight.
     pub fn stage_submit(
         &mut self,
         order_id: OrderId,
@@ -183,6 +185,19 @@ where
         order
     }
 
+    pub fn stage_modify(&mut self, order_id: OrderId, price: f64, qty: f64) -> Option<Order> {
+        let tick_size = self.depth.tick_size();
+        let order = self.orders.get_mut(&order_id)?;
+        if !order.cancellable() {
+            return None;
+        }
+        order.price_tick = (price / tick_size).round() as i64;
+        order.qty = qty;
+        order.leaves_qty = qty;
+        order.req = Status::Replaced;
+        Some(order.clone())
+    }
+
     pub fn stage_cancel(&mut self, order_id: OrderId) -> Option<Order> {
         let order = self.orders.get_mut(&order_id)?;
         if !order.cancellable() {
@@ -197,7 +212,6 @@ where
     pub fn open_orders(&self) -> usize { self.orders.len() }
 }
 
-/// Safe default strategy for runtime smoke testing. It never creates an order.
 pub struct NoopStrategy;
 
 impl Strategy<HashMapMarketDepth> for NoopStrategy {
