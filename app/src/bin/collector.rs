@@ -80,7 +80,9 @@ async fn main() {
                         exit(1);
                     }
                     event_count += 1;
-                    if event_count % 10_000 == 0 {
+                    if event_count == 1 {
+                        info!(%symbol, "first normalized market event received");
+                    } else if event_count % 10_000 == 0 {
                         info!(event_count, "normalized events collected");
                     }
                 }
