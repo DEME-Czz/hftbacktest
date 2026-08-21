@@ -76,10 +76,6 @@ impl From<BinanceFuturesError> for Value {
     }
 }
 
-/// Binance USD-M configuration.
-///
-/// `public_stream_url` is the public market WebSocket entry point.
-/// `private_stream_url` is a complete URL template and must contain `{listen_key}`.
 #[derive(Deserialize)]
 pub struct Config {
     pub public_stream_url: String,
@@ -108,24 +104,29 @@ impl BinanceFutures {
         let base_url = self.config.public_stream_url.clone();
         let client = self.client.clone();
         let symbol_tx = self.symbol_tx.clone();
+        // Subscribe before spawning. This guarantees register() has at least one receiver
+        // immediately after this method returns and removes the startup race.
+        let initial_symbol_rx = self.symbol_tx.subscribe();
 
         tokio::spawn(async move {
+            let mut initial_symbol_rx = Some(initial_symbol_rx);
             let _ = Retry::new(ExponentialBackoff::default())
                 .error_handler(|error: BinanceFuturesError| {
                     error!(?error, "market data stream connection interrupted");
-                    ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                            ErrorKind::ConnectionInterrupted,
-                            error.into(),
-                        ))))
-                        .unwrap();
+                    let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                        ErrorKind::ConnectionInterrupted,
+                        error.into(),
+                    ))));
                     Ok(())
                 })
                 .retry(|| async {
+                    let symbol_rx = initial_symbol_rx
+                        .take()
+                        .unwrap_or_else(|| symbol_tx.subscribe());
                     let mut stream = market_data_stream::MarketDataStream::new(
                         client.clone(),
                         ev_tx.clone(),
-                        symbol_tx.subscribe(),
+                        symbol_rx,
                     );
                     debug!(%base_url, "connecting Binance public market stream");
                     stream.connect(&base_url).await?;
@@ -146,12 +147,10 @@ impl BinanceFutures {
             let _ = Retry::new(ExponentialBackoff::default())
                 .error_handler(|error: BinanceFuturesError| {
                     error!(?error, "user data stream connection interrupted");
-                    ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                            ErrorKind::ConnectionInterrupted,
-                            error.into(),
-                        ))))
-                        .unwrap();
+                    let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                        ErrorKind::ConnectionInterrupted,
+                        error.into(),
+                    ))));
                     Ok(())
                 })
                 .retry(|| async {
@@ -170,6 +169,12 @@ impl BinanceFutures {
                 })
                 .await;
         });
+    }
+
+    /// Starts only public market data. Collector must use this path so API credentials,
+    /// when present in the config, never cause a private user-data connection.
+    pub fn run_market_data_only(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
+        self.connect_market_data_stream(ev_tx);
     }
 }
 
@@ -200,7 +205,11 @@ impl Connector for BinanceFutures {
         let symbol = symbol.to_lowercase();
         let mut symbols = self.symbols.lock().unwrap();
         if symbols.insert(symbol.clone()) {
-            self.symbol_tx.send(symbol).unwrap();
+            // A missing receiver is not a fatal condition. The symbol remains in the authoritative
+            // symbol set and can be replayed/re-registered by the runtime after reconnect.
+            if self.symbol_tx.send(symbol.clone()).is_err() {
+                warn!(%symbol, "symbol registered before a stream receiver was ready");
+            }
         }
     }
 
@@ -245,8 +254,10 @@ impl Connector for BinanceFutures {
                                 .unwrap()
                                 .update_from_rest(&client_order_id, &resp)
                             {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }))
-                                    .unwrap();
+                                let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                                    symbol,
+                                    order,
+                                }));
                             }
                         }
                         Err(error) => {
@@ -255,17 +266,14 @@ impl Connector for BinanceFutures {
                                 .unwrap()
                                 .update_submit_fail(&client_order_id, &error)
                             {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                                let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
                                     symbol: symbol.clone(),
                                     order,
-                                }))
-                                .unwrap();
+                                }));
                             }
-                            tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                                ErrorKind::OrderError,
-                                error.into(),
-                            ))))
-                            .unwrap();
+                            let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Error(
+                                LiveError::with(ErrorKind::OrderError, error.into()),
+                            )));
                         }
                     }
                 }
@@ -273,8 +281,7 @@ impl Connector for BinanceFutures {
                     warn!(?order, "duplicate client order id; expiring local request");
                     order.req = Status::None;
                     order.status = Status::Expired;
-                    tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }))
-                        .unwrap();
+                    let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
                 }
             }
         });
@@ -297,8 +304,10 @@ impl Connector for BinanceFutures {
                             .unwrap()
                             .update_from_rest(&client_order_id, &resp)
                         {
-                            tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }))
-                                .unwrap();
+                            let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                                symbol,
+                                order,
+                            }));
                         }
                     }
                     Err(error) => {
@@ -307,17 +316,14 @@ impl Connector for BinanceFutures {
                             .unwrap()
                             .update_cancel_fail(&client_order_id, &error)
                         {
-                            tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                            let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
                                 symbol: symbol.clone(),
                                 order,
-                            }))
-                            .unwrap();
+                            }));
                         }
-                        tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                            ErrorKind::OrderError,
-                            error.into(),
-                        ))))
-                        .unwrap();
+                        let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Error(
+                            LiveError::with(ErrorKind::OrderError, error.into()),
+                        )));
                     }
                 }
             } else {
