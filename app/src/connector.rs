@@ -6,7 +6,6 @@ use std::{
 use hftbacktest::types::Order;
 use tokio::sync::mpsc::UnboundedSender;
 
-/// A message will be received by the publisher thread and then published to the bots.
 pub enum PublishEvent {
     BatchStart(u64),
     BatchEnd(u64),
@@ -32,6 +31,7 @@ pub trait Connector {
     fn order_manager(&self) -> Arc<Mutex<dyn GetOrders + Send + 'static>>;
     fn run(&mut self, tx: UnboundedSender<PublishEvent>);
     fn submit(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>);
+    fn modify(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>);
     fn cancel(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>);
 }
 
