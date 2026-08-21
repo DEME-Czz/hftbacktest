@@ -16,7 +16,7 @@ use tracing::{error, info};
 #[derive(Parser, Debug)]
 #[command(version, about = "Collect normalized Binance USD-M Futures events")]
 struct Args {
-    /// Binance connector TOML configuration. API credentials may be left empty for market data.
+    /// Binance connector TOML configuration. API credentials are ignored by collector.
     config: String,
     /// Output CSV file.
     path: String,
@@ -44,7 +44,7 @@ async fn main() {
     writeln!(writer, "symbol,ev,exch_ts,local_ts,px,qty,order_id,ival,fval").unwrap();
 
     let (tx, mut rx) = unbounded_channel();
-    connector.run(tx);
+    connector.run_market_data_only(tx);
     connector.register(args.symbol);
 
     info!(path = args.path, "normalized collector started");
