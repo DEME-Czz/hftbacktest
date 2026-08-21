@@ -44,13 +44,7 @@ impl UserDataStream {
         symbols: SharedSymbolSet,
         symbol_rx: Receiver<String>,
     ) -> Self {
-        Self {
-            symbols,
-            client,
-            ev_tx,
-            order_manager,
-            symbol_rx,
-        }
+        Self { symbols, client, ev_tx, order_manager, symbol_rx }
     }
 
     pub async fn get_listen_key(&self) -> Result<String, BinanceFuturesError> {
@@ -60,52 +54,30 @@ impl UserDataStream {
     fn process_message(&self, stream: EventStream) -> Result<(), BinanceFuturesError> {
         match stream {
             EventStream::DepthUpdate(_) | EventStream::Trade(_) => unreachable!(),
-            EventStream::ListenKeyExpired(_) => {
-                return Err(BinanceFuturesError::ListenKeyExpired);
-            }
+            EventStream::ListenKeyExpired(_) => return Err(BinanceFuturesError::ListenKeyExpired),
             EventStream::AccountUpdate(data) => {
                 for position in data.account.position {
-                    self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Position {
-                            symbol: position.symbol,
-                            qty: position.position_amount,
-                            exch_ts: data.transaction_time * 1_000_000,
-                        }))
-                        .unwrap();
+                    let _ = self.ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
+                        symbol: position.symbol,
+                        qty: position.position_amount,
+                        exch_ts: data.transaction_time * 1_000_000,
+                    }));
                 }
             }
             EventStream::OrderTradeUpdate(data) => {
                 match self.order_manager.lock().unwrap().update_from_ws(&data) {
                     Ok(Some(order)) => {
-                        self.ev_tx
-                            .send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                symbol: data.order.symbol,
-                                order,
-                            }))
-                            .unwrap();
+                        let _ = self.ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                            symbol: data.order.symbol,
+                            order,
+                        }));
                     }
-                    Ok(None) => {
-                        // This order is already deleted.
-                    }
-                    Err(BinanceFuturesError::PrefixUnmatched) => {
-                        // This order is not created by this connector.
-                    }
-                    Err(error) => {
-                        error!(
-                            ?error,
-                            ?data,
-                            "Couldn't update the order from OrderTradeUpdate message."
-                        );
-                    }
+                    Ok(None) => {}
+                    Err(BinanceFuturesError::PrefixUnmatched) => {}
+                    Err(error) => error!(?error, ?data, "couldn't update order from user stream"),
                 }
             }
-            EventStream::TradeLite(_data) => {
-                // Since this message does not include the order status, additional logic is
-                // required to fully utilize it. To reduce latency— which first needs to be
-                // measured—a new logic must be implemented to reconstruct the order status and open
-                // position by using the last filled quantity and reconciling it with data from the
-                // ORDER_TRADE_UPDATE message.
-            }
+            EventStream::TradeLite(_data) => {}
         }
         Ok(())
     }
@@ -123,8 +95,6 @@ impl UserDataStream {
         let mut last_ping = Instant::now();
 
         tokio::spawn(async move {
-            // Cancel all orders before connecting to the stream in order to start with the
-            // clean state.
             for symbol in &symbols {
                 if let Err(error) = cancel_all(
                     client.clone(),
@@ -134,36 +104,29 @@ impl UserDataStream {
                 )
                 .await
                 {
-                    error!(?error, %symbol, "Couldn't cancel all orders.");
+                    error!(?error, %symbol, "couldn't cancel all orders during initial reconciliation");
                 }
             }
 
-            // Fetches the initial states such as positions and open orders.
-            if let Err(error) =
-                get_position_information(client.clone(), symbols, ev_tx.clone()).await
-            {
-                error!(?error, "Couldn't get position information.");
+            if let Err(error) = get_position_information(client.clone(), symbols, ev_tx.clone()).await {
+                error!(?error, "couldn't get initial position information");
             }
         });
 
         loop {
             select! {
                 _ = interval.tick() => {
-                    self.order_manager
-                        .lock()
-                        .unwrap()
-                        .gc();
+                    self.order_manager.lock().unwrap().gc();
                     let client_ = self.client.clone();
                     tokio::spawn(async move {
                         if let Err(error) = client_.keepalive_user_data_stream().await {
-                            error!(?error, "Failed keepalive user data stream.");
-                            // todo: reset the connection.
+                            error!(?error, "failed to keep user data stream alive");
                         }
                     });
                 }
                 _ = ping_checker.tick() => {
                     if last_ping.elapsed() > Duration::from_secs(300) {
-                        warn!("Ping timeout.");
+                        warn!("user data stream ping timeout");
                         return Err(BinanceFuturesError::ConnectionInterrupted);
                     }
                 }
@@ -173,38 +136,37 @@ impl UserDataStream {
                             let client = self.client.clone();
                             let order_manager = self.order_manager.clone();
                             let ev_tx = self.ev_tx.clone();
-
                             tokio::spawn(async move {
                                 if let Err(error) = cancel_all(
                                     client.clone(),
                                     symbol.clone(),
-                                    order_manager.clone(),
-                                    ev_tx.clone()
+                                    order_manager,
+                                    ev_tx.clone(),
                                 ).await {
-                                    error!(?error, %symbol, "Couldn't cancel all orders.");
+                                    error!(?error, %symbol, "couldn't cancel all orders for registered symbol");
+                                }
+
+                                // Always reconcile the newly registered symbol. This removes the
+                                // startup race where the private stream snapshots the symbol set
+                                // before main() calls register(), which otherwise leaves live
+                                // execution waiting forever for its initial position state.
+                                let mut symbols = HashSet::new();
+                                symbols.insert(symbol.clone());
+                                if let Err(error) = get_position_information(client, symbols, ev_tx).await {
+                                    error!(?error, %symbol, "couldn't reconcile registered symbol position");
                                 }
                             });
                         }
-                        Err(RecvError::Closed) => {
-                            return Ok(());
-                        }
-                        Err(RecvError::Lagged(num)) => {
-                            error!("{num} subscription requests were missed.");
-                        }
+                        Err(RecvError::Closed) => return Ok(()),
+                        Err(RecvError::Lagged(num)) => error!(num, "user stream symbol registrations were missed"),
                     }
                 }
                 message = read.next() => match message {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<Stream>(&text) {
-                            Ok(Stream::EventStream(stream)) => {
-                                self.process_message(stream)?;
-                            }
-                            Ok(Stream::Result(result)) => {
-                                debug!(?result, "Subscription request response is received.");
-                            }
-                            Err(error) => {
-                                error!(?error, %text, "Couldn't parse Stream.");
-                            }
+                            Ok(Stream::EventStream(stream)) => self.process_message(stream)?,
+                            Ok(Stream::Result(result)) => debug!(?result, "user stream response received"),
+                            Err(error) => error!(?error, %text, "couldn't parse user stream"),
                         }
                     }
                     Some(Ok(Message::Ping(data))) => {
@@ -213,18 +175,14 @@ impl UserDataStream {
                     }
                     Some(Ok(Message::Close(close_frame))) => {
                         return Err(BinanceFuturesError::ConnectionAbort(
-                            close_frame.map(|f| f.to_string()).unwrap_or(String::new())
+                            close_frame.map(|f| f.to_string()).unwrap_or_default(),
                         ));
                     }
                     Some(Ok(Message::Binary(_)))
                     | Some(Ok(Message::Frame(_)))
                     | Some(Ok(Message::Pong(_))) => {}
-                    Some(Err(error)) => {
-                        return Err(BinanceFuturesError::from(error));
-                    }
-                    None => {
-                        return Err(BinanceFuturesError::ConnectionInterrupted);
-                    }
+                    Some(Err(error)) => return Err(error.into()),
+                    None => return Err(BinanceFuturesError::ConnectionInterrupted),
                 }
             }
         }
@@ -237,16 +195,13 @@ pub async fn cancel_all(
     order_manager: SharedOrderManager,
     ev_tx: UnboundedSender<PublishEvent>,
 ) -> Result<(), BinanceFuturesError> {
-    // todo: rate-limit throttling.
     client.cancel_all_orders(&symbol).await?;
     let orders = order_manager.lock().unwrap().cancel_all_from_rest(&symbol);
     for order in orders {
-        ev_tx
-            .send(PublishEvent::LiveEvent(LiveEvent::Order {
-                symbol: symbol.clone(),
-                order,
-            }))
-            .unwrap();
+        let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+            symbol: symbol.clone(),
+            order,
+        }));
     }
     Ok(())
 }
@@ -256,26 +211,22 @@ pub async fn get_position_information(
     mut symbols: HashSet<String>,
     ev_tx: UnboundedSender<PublishEvent>,
 ) -> Result<(), BinanceFuturesError> {
-    // todo: rate-limit throttling.
     let position_information = client.get_position_information().await?;
     position_information.into_iter().for_each(|position| {
-        symbols.remove(&position.symbol);
-        ev_tx
-            .send(PublishEvent::LiveEvent(LiveEvent::Position {
+        if symbols.remove(&position.symbol) {
+            let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
                 symbol: position.symbol,
                 qty: position.position_amount,
                 exch_ts: position.update_time * 1_000_000,
-            }))
-            .unwrap();
+            }));
+        }
     });
     for symbol in symbols {
-        ev_tx
-            .send(PublishEvent::LiveEvent(LiveEvent::Position {
-                symbol,
-                qty: 0.0,
-                exch_ts: 0,
-            }))
-            .unwrap();
+        let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
+            symbol,
+            qty: 0.0,
+            exch_ts: 0,
+        }));
     }
     Ok(())
 }
