@@ -5,6 +5,10 @@ use crate::{
     types::{Bot, Event, OrdType, Order, OrderId, OrderRequest, Side, TimeInForce},
 };
 
+pub mod grid;
+
+pub use grid::{GridConfig, GridStrategy};
+
 /// Exchange-independent read-only state presented to a strategy.
 pub struct MarketContext<'a, MD: MarketDepth> {
     pub timestamp: i64,
@@ -15,6 +19,7 @@ pub struct MarketContext<'a, MD: MarketDepth> {
 }
 
 /// Exchange-independent actions emitted by a strategy.
+#[derive(Clone, Debug)]
 pub enum StrategyCommand {
     Submit {
         order_id: OrderId,
@@ -28,6 +33,9 @@ pub enum StrategyCommand {
     Cancel { order_id: OrderId },
 }
 
+/// A strategy is a pure decision component: market/account state in, commands out.
+///
+/// It must not depend on Binance, WebSocket, REST, Tokio, or backtest-specific transport details.
 pub trait Strategy<MD: MarketDepth> {
     fn on_event(&mut self, context: &MarketContext<'_, MD>) -> Vec<StrategyCommand>;
 }
