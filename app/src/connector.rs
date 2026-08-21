@@ -8,8 +8,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 /// A message will be received by the publisher thread and then published to the bots.
 pub enum PublishEvent {
-    BatchStart(String),
-    BatchEnd(String),
+    BatchStart(u64),
+    BatchEnd(u64),
     LiveEvent(hftbacktest::types::LiveEvent),
     RegisterInstrument {
         id: u64,
@@ -19,7 +19,6 @@ pub enum PublishEvent {
     },
 }
 
-/// Provides a build function for the Connector.
 pub trait ConnectorBuilder {
     type Error: Debug;
 
@@ -28,7 +27,6 @@ pub trait ConnectorBuilder {
         Self: Sized;
 }
 
-/// Provides an interface for connecting with an exchange or broker for a live bot.
 pub trait Connector {
     fn register(&mut self, symbol: String);
     fn order_manager(&self) -> Arc<Mutex<dyn GetOrders + Send + 'static>>;
