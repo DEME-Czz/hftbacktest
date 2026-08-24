@@ -583,4 +583,33 @@ mod tests {
         assert_eq!(recovered.status, Status::New);
         assert_eq!(recovered.req, Status::None);
     }
+
+    #[tokio::test]
+    async fn submit_is_tracked_before_the_async_http_request_starts() {
+        let connector = BinanceFutures::new(BinanceConfig {
+            public_stream_url: "ws://127.0.0.1/".to_string(),
+            private_stream_url: "ws://127.0.0.1/{listen_key}".to_string(),
+            api_url: "http://127.0.0.1:9".to_string(),
+            order_prefix: "strategy-a".to_string(),
+            api_key: "key".to_string(),
+            secret: "secret".to_string(),
+            allow_test_endpoints: true,
+        })
+        .unwrap();
+        let mut order = Order::new(
+            84,
+            1_000,
+            0.1,
+            0.001,
+            Side::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        );
+        order.req = Status::New;
+        let (tx, _rx) = unbounded_channel();
+
+        connector.submit("btcusdt".to_string(), order, 0.001, tx);
+
+        assert_eq!(connector.open_orders("btcusdt").len(), 1);
+    }
 }
