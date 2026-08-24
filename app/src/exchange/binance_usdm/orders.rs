@@ -555,4 +555,42 @@ mod tests {
         assert!(manager.active_orders("btcusdt").is_empty());
         assert!(manager.active_orders("ethusdt").is_empty());
     }
+
+    #[test]
+    fn terminal_websocket_update_wins_over_equal_timestamp_rest_response() {
+        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
+        let mut manager = OrderManager::new(codec);
+        let mut local = hftbacktest::types::Order::new(
+            77,
+            1_000,
+            0.1,
+            1.0,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::GTC,
+        );
+        local.req = hftbacktest::types::Status::New;
+        let client_order_id = manager
+            .prepare_client_order_id("btcusdt".to_string(), local)
+            .unwrap();
+        {
+            let tracked = manager.orders.get_mut(&client_order_id).unwrap();
+            tracked.order.status = hftbacktest::types::Status::Filled;
+            tracked.order.req = hftbacktest::types::Status::None;
+            tracked.order.exch_timestamp = 1_234_000_000;
+            tracked.removed_by_ws = true;
+        }
+        manager
+            .order_id_map
+            .remove(&crate::exchange::binance_usdm::id::RefSymbolOrderId::new(
+                "btcusdt",
+                77,
+            ));
+
+        let response = open_order(&client_order_id);
+        assert!(manager
+            .update_from_rest(&client_order_id, &response)
+            .is_none());
+        assert!(manager.active_orders("btcusdt").is_empty());
+    }
 }
