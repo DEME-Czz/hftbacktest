@@ -1,11 +1,17 @@
 use std::{
     collections::HashMap,
+    future::Future,
     time::{Duration, Instant},
 };
 
 use futures_util::{SinkExt, StreamExt};
 use hftbacktest::prelude::*;
-use tokio::{select, sync::mpsc::UnboundedSender, time};
+use tokio::{
+    select,
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    task::JoinHandle,
+    time,
+};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, warn};
 
@@ -25,6 +31,56 @@ pub struct UserDataStream {
     client: BinanceFuturesClient,
     ev_tx: UnboundedSender<PublishEvent>,
     order_manager: SharedOrderManager,
+}
+
+enum UserStreamFrame {
+    Text(String),
+    Ping(Instant),
+    Terminal(BinanceFuturesError),
+}
+
+struct UserStreamReaderGuard(JoinHandle<()>);
+
+impl Drop for UserStreamReaderGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn bootstrap_recovery_barrier<T, R, E, Recovery, Process, Ready>(
+    frames: &mut UnboundedReceiver<T>,
+    recovery: Recovery,
+    mut process: Process,
+    ready: Ready,
+) -> Result<(), E>
+where
+    Recovery: Future<Output = Result<R, E>>,
+    Process: FnMut(T) -> Result<(), E>,
+    Ready: FnOnce(R) -> Result<(), E>,
+{
+    tokio::pin!(recovery);
+    let mut buffered = Vec::new();
+    let mut frames_open = true;
+    let recovered = loop {
+        if !frames_open {
+            break recovery.await?;
+        }
+        select! {
+            result = &mut recovery => break result?,
+            frame = frames.recv() => match frame {
+                Some(frame) => buffered.push(frame),
+                None => frames_open = false,
+            }
+        }
+    };
+
+    for frame in buffered {
+        process(frame)?;
+    }
+    while let Ok(frame) = frames.try_recv() {
+        process(frame)?;
+    }
+    ready(recovered)
 }
 
 impl UserDataStream {
@@ -87,18 +143,76 @@ impl UserDataStream {
         Ok(())
     }
 
+    fn process_frame(
+        &self,
+        frame: UserStreamFrame,
+        last_ping: &mut Instant,
+    ) -> Result<(), BinanceFuturesError> {
+        match frame {
+            UserStreamFrame::Text(text) => match serde_json::from_str::<Stream>(&text) {
+                Ok(Stream::EventStream(stream)) => self.process_message(stream)?,
+                Ok(Stream::Result(result)) => {
+                    debug!(?result, "user stream response received");
+                }
+                Err(error) => error!(?error, %text, "couldn't parse user stream"),
+            },
+            UserStreamFrame::Ping(received_at) => *last_ping = received_at,
+            UserStreamFrame::Terminal(error) => return Err(error),
+        }
+        Ok(())
+    }
+
     pub async fn connect(&mut self, url: &str) -> Result<(), BinanceFuturesError> {
         let (ws_stream, _) = connect_websocket(url).await?;
         let (mut write, mut read) = ws_stream.split();
+        let (frame_tx, mut frame_rx) = unbounded_channel();
+        let reader_task = tokio::spawn(async move {
+            loop {
+                let (frame, terminal) = match read.next().await {
+                    Some(Ok(Message::Text(text))) => {
+                        (UserStreamFrame::Text(text.to_string()), false)
+                    }
+                    Some(Ok(Message::Ping(data))) => match write.send(Message::Pong(data)).await {
+                        Ok(()) => (UserStreamFrame::Ping(Instant::now()), false),
+                        Err(error) => (UserStreamFrame::Terminal(error.into()), true),
+                    },
+                    Some(Ok(Message::Close(close_frame))) => (
+                        UserStreamFrame::Terminal(BinanceFuturesError::ConnectionAbort(
+                            close_frame
+                                .map(|frame| frame.to_string())
+                                .unwrap_or_default(),
+                        )),
+                        true,
+                    ),
+                    Some(Ok(Message::Binary(_)))
+                    | Some(Ok(Message::Frame(_)))
+                    | Some(Ok(Message::Pong(_))) => continue,
+                    Some(Err(error)) => (UserStreamFrame::Terminal(error.into()), true),
+                    None => (
+                        UserStreamFrame::Terminal(BinanceFuturesError::ConnectionInterrupted),
+                        true,
+                    ),
+                };
+                if frame_tx.send(frame).is_err() || terminal {
+                    break;
+                }
+            }
+        });
+        let _reader_guard = UserStreamReaderGuard(reader_task);
         let mut interval = time::interval(Duration::from_secs(60 * 30));
         let mut ping_checker = time::interval(Duration::from_secs(10));
-
         let mut last_ping = Instant::now();
-        reconcile_account_state(
-            self.client.clone(),
-            &self.instruments,
-            self.order_manager.clone(),
-            self.ev_tx.clone(),
+
+        bootstrap_recovery_barrier(
+            &mut frame_rx,
+            reconcile_account_state_without_ready(
+                self.client.clone(),
+                &self.instruments,
+                self.order_manager.clone(),
+                self.ev_tx.clone(),
+            ),
+            |frame| self.process_frame(frame, &mut last_ping),
+            |()| publish_account_snapshot_ready(&self.instruments, &self.ev_tx),
         )
         .await?;
 
@@ -119,27 +233,8 @@ impl UserDataStream {
                         return Err(BinanceFuturesError::ConnectionInterrupted);
                     }
                 }
-                message = read.next() => match message {
-                    Some(Ok(Message::Text(text))) => {
-                        match serde_json::from_str::<Stream>(&text) {
-                            Ok(Stream::EventStream(stream)) => self.process_message(stream)?,
-                            Ok(Stream::Result(result)) => debug!(?result, "user stream response received"),
-                            Err(error) => error!(?error, %text, "couldn't parse user stream"),
-                        }
-                    }
-                    Some(Ok(Message::Ping(data))) => {
-                        write.send(Message::Pong(data)).await?;
-                        last_ping = Instant::now();
-                    }
-                    Some(Ok(Message::Close(close_frame))) => {
-                        return Err(BinanceFuturesError::ConnectionAbort(
-                            close_frame.map(|f| f.to_string()).unwrap_or_default(),
-                        ));
-                    }
-                    Some(Ok(Message::Binary(_)))
-                    | Some(Ok(Message::Frame(_)))
-                    | Some(Ok(Message::Pong(_))) => {}
-                    Some(Err(error)) => return Err(error.into()),
+                frame = frame_rx.recv() => match frame {
+                    Some(frame) => self.process_frame(frame, &mut last_ping)?,
                     None => return Err(BinanceFuturesError::ConnectionInterrupted),
                 }
             }
@@ -147,11 +242,31 @@ impl UserDataStream {
     }
 }
 
+async fn reconcile_account_state_without_ready(
+    client: BinanceFuturesClient,
+    instruments: &[TradingInstrument],
+    order_manager: SharedOrderManager,
+    ev_tx: UnboundedSender<PublishEvent>,
+) -> Result<(), BinanceFuturesError> {
+    reconcile_account_state_inner(client, instruments, order_manager, ev_tx, false).await
+}
+
+#[allow(dead_code)]
 pub async fn reconcile_account_state(
     client: BinanceFuturesClient,
     instruments: &[TradingInstrument],
     order_manager: SharedOrderManager,
     ev_tx: UnboundedSender<PublishEvent>,
+) -> Result<(), BinanceFuturesError> {
+    reconcile_account_state_inner(client, instruments, order_manager, ev_tx, true).await
+}
+
+async fn reconcile_account_state_inner(
+    client: BinanceFuturesClient,
+    instruments: &[TradingInstrument],
+    order_manager: SharedOrderManager,
+    ev_tx: UnboundedSender<PublishEvent>,
+    publish_ready: bool,
 ) -> Result<(), BinanceFuturesError> {
     let mut open_order_snapshots = Vec::with_capacity(instruments.len());
     for instrument in instruments {
@@ -212,6 +327,18 @@ pub async fn reconcile_account_state(
                 }))
                 .map_err(|_| BinanceFuturesError::PublishSinkClosed)?;
         }
+        if publish_ready {
+            publish_account_snapshot_ready(std::slice::from_ref(instrument), &ev_tx)?;
+        }
+    }
+    Ok(())
+}
+
+fn publish_account_snapshot_ready(
+    instruments: &[TradingInstrument],
+    ev_tx: &UnboundedSender<PublishEvent>,
+) -> Result<(), BinanceFuturesError> {
+    for instrument in instruments {
         ev_tx
             .send(PublishEvent::AccountSnapshotReady {
                 symbol: instrument.symbol.clone(),
