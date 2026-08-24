@@ -6,7 +6,7 @@ use tracing::error;
 
 use crate::exchange::binance_usdm::{
     BinanceFuturesError,
-    id::{RefSymbolOrderId, SymbolOrderId, generate_random_id},
+    id::{ClientOrderIdCodec, ClientOrderIdError, RefSymbolOrderId, SymbolOrderId},
     now_ns,
     protocol::{rest::OrderResponse, stream::OrderTradeUpdate},
 };
@@ -37,17 +37,17 @@ pub type ClientOrderId = String;
 /// immediately notified to the bot, but the Connector must still retain the `client_order_id` in
 /// case an update arrives later from the other channel, which has not yet sent the deletion
 /// message.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct OrderManager {
-    prefix: String,
+    client_order_ids: ClientOrderIdCodec,
     orders: HashMap<ClientOrderId, OrderExt>,
     order_id_map: HashMap<SymbolOrderId, ClientOrderId>,
 }
 
 impl OrderManager {
-    pub fn new(prefix: &str) -> Self {
+    pub(crate) fn new(client_order_ids: ClientOrderIdCodec) -> Self {
         Self {
-            prefix: prefix.to_string(),
+            client_order_ids,
             orders: Default::default(),
             order_id_map: Default::default(),
         }
@@ -57,8 +57,12 @@ impl OrderManager {
         &mut self,
         resp: &OrderTradeUpdate,
     ) -> Result<Option<Order>, BinanceFuturesError> {
-        if !resp.order.client_order_id.starts_with(&self.prefix) {
-            return Err(BinanceFuturesError::PrefixUnmatched);
+        match self.client_order_ids.decode(&resp.order.client_order_id) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(BinanceFuturesError::PrefixUnmatched),
+            Err(ClientOrderIdError::Malformed | ClientOrderIdError::InvalidPrefix) => {
+                return Err(BinanceFuturesError::MalformedClientOrderId);
+            }
         }
         let order_ext = self
             .orders
@@ -247,7 +251,7 @@ impl OrderManager {
             return None;
         }
 
-        let client_order_id = format!("{}{}", self.prefix, generate_random_id(16));
+        let client_order_id = self.client_order_ids.encode(order.order_id);
         if self.orders.contains_key(&client_order_id) {
             return None;
         }

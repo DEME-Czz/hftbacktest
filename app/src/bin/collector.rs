@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     let raw = read_to_string(&args.config)
         .with_context(|| format!("failed to read configuration: {}", args.config))?;
     let config = AppConfig::parse_and_validate(&raw, RunMode::DryRun)?;
-    let mut connector = BinanceFutures::new(config.exchange);
+    let mut connector = BinanceFutures::new(config.exchange)?;
 
     let file = File::create(&args.path)
         .with_context(|| format!("failed to create collector output: {}", args.path))?;

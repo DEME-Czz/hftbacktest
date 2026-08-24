@@ -2,6 +2,104 @@ use hashbrown::Equivalent;
 use hftbacktest::prelude::OrderId;
 use rand::Rng;
 
+const CLIENT_ORDER_ID_MAX_LEN: usize = 36;
+const CLIENT_ORDER_ID_NONCE_LEN: usize = 6;
+const CLIENT_ORDER_ID_VERSION: &str = "v1";
+const ORDER_ID_BASE: u32 = 36;
+const MAX_PREFIX_LEN: usize = 12;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ClientOrderIdError {
+    InvalidPrefix,
+    Malformed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ClientOrderIdCodec {
+    prefix: String,
+}
+
+impl ClientOrderIdCodec {
+    pub(crate) fn new(prefix: &str) -> Result<Self, ClientOrderIdError> {
+        if prefix.is_empty()
+            || prefix.len() > MAX_PREFIX_LEN
+            || !prefix.bytes().all(is_allowed_client_order_id_byte)
+        {
+            return Err(ClientOrderIdError::InvalidPrefix);
+        }
+        Ok(Self {
+            prefix: prefix.to_string(),
+        })
+    }
+
+    pub(crate) fn encode(&self, order_id: OrderId) -> String {
+        let encoded_order_id = encode_base36(order_id);
+        let nonce = generate_random_id(CLIENT_ORDER_ID_NONCE_LEN);
+        let client_order_id = format!(
+            "{}-{}-{}-{}",
+            self.prefix, CLIENT_ORDER_ID_VERSION, encoded_order_id, nonce
+        );
+        debug_assert!(client_order_id.len() <= CLIENT_ORDER_ID_MAX_LEN);
+        client_order_id
+    }
+
+    /// Returns `Ok(None)` for another strategy's namespace and an error for an identifier that
+    /// starts with this strategy's prefix but cannot safely be recovered.
+    pub(crate) fn decode(
+        &self,
+        client_order_id: &str,
+    ) -> Result<Option<OrderId>, ClientOrderIdError> {
+        let owned_marker = format!("{}-{}-", self.prefix, CLIENT_ORDER_ID_VERSION);
+        if !client_order_id.starts_with(&owned_marker) {
+            return if client_order_id.starts_with(&self.prefix) {
+                Err(ClientOrderIdError::Malformed)
+            } else {
+                Ok(None)
+            };
+        }
+        if client_order_id.len() > CLIENT_ORDER_ID_MAX_LEN
+            || !client_order_id.bytes().all(is_allowed_client_order_id_byte)
+        {
+            return Err(ClientOrderIdError::Malformed);
+        }
+
+        let payload = &client_order_id[owned_marker.len()..];
+        let Some((encoded_order_id, nonce)) = payload.split_once('-') else {
+            return Err(ClientOrderIdError::Malformed);
+        };
+        if encoded_order_id.is_empty()
+            || encoded_order_id.contains('-')
+            || nonce.len() != CLIENT_ORDER_ID_NONCE_LEN
+            || !nonce.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return Err(ClientOrderIdError::Malformed);
+        }
+        let order_id = OrderId::from_str_radix(encoded_order_id, ORDER_ID_BASE)
+            .map_err(|_| ClientOrderIdError::Malformed)?;
+        Ok(Some(order_id))
+    }
+}
+
+fn is_allowed_client_order_id_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+}
+
+fn encode_base36(mut value: OrderId) -> String {
+    const DIGITS: &[u8; ORDER_ID_BASE as usize] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    if value == 0 {
+        return "0".to_string();
+    }
+
+    let mut encoded = [0_u8; 13];
+    let mut cursor = encoded.len();
+    while value > 0 {
+        cursor -= 1;
+        encoded[cursor] = DIGITS[(value % u64::from(ORDER_ID_BASE)) as usize];
+        value /= u64::from(ORDER_ID_BASE);
+    }
+    String::from_utf8_lossy(&encoded[cursor..]).into_owned()
+}
+
 #[derive(Eq, Hash, PartialEq, Debug)]
 pub struct SymbolOrderId {
     pub symbol: String,

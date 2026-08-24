@@ -24,6 +24,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     exchange::binance_usdm::{
+        id::{ClientOrderIdCodec, ClientOrderIdError},
         orders::{OrderManager, SharedOrderManager},
         rest::BinanceFuturesClient,
     },
@@ -62,6 +63,10 @@ pub enum BinanceFuturesError {
     OrderError { code: i64, msg: String },
     #[error("PrefixUnmatched")]
     PrefixUnmatched,
+    #[error("InvalidOrderPrefix")]
+    InvalidOrderPrefix,
+    #[error("MalformedClientOrderId")]
+    MalformedClientOrderId,
     #[error("OrderNotFound")]
     OrderNotFound,
     #[error("Tungstenite: {0:?}")]
@@ -131,18 +136,20 @@ pub struct BinanceFutures {
 }
 
 impl BinanceFutures {
-    pub fn new(config: BinanceConfig) -> Self {
-        let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
+    pub fn new(config: BinanceConfig) -> Result<Self, BinanceFuturesError> {
+        let client_order_ids = ClientOrderIdCodec::new(&config.order_prefix)
+            .map_err(|_| BinanceFuturesError::InvalidOrderPrefix)?;
+        let order_manager = Arc::new(Mutex::new(OrderManager::new(client_order_ids)));
         let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret);
         let (symbol_tx, _) = broadcast::channel(500);
 
-        Self {
+        Ok(Self {
             config,
             symbols: Default::default(),
             order_manager,
             client,
             symbol_tx,
-        }
+        })
     }
 
     pub fn connect_market_data_stream(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
@@ -215,6 +222,10 @@ impl BinanceFutures {
                 .await;
         });
     }
+}
+
+pub(crate) fn validate_order_prefix(prefix: &str) -> Result<(), ClientOrderIdError> {
+    ClientOrderIdCodec::new(prefix).map(|_| ())
 }
 
 impl MarketDataSource for BinanceFutures {

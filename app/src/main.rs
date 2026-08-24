@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to read configuration: {}", args.config))?;
     let config = AppConfig::parse_and_validate(&raw, mode)?;
     let runtimes = build_runtimes(&config.runtime.strategies)?;
-    let connector = BinanceFutures::new(config.exchange);
+    let connector = BinanceFutures::new(config.exchange)?;
 
     LiveService::new(connector, runtimes, config.runtime.risk, mode)
         .run()

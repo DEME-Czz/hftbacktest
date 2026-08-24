@@ -3,7 +3,11 @@ use std::net::IpAddr;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::{exchange::binance_usdm::BinanceConfig, live::config::RuntimeConfig, ports::RunMode};
+use crate::{
+    exchange::binance_usdm::{BinanceConfig, validate_order_prefix},
+    live::config::RuntimeConfig,
+    ports::RunMode,
+};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct AppConfig {
@@ -29,6 +33,8 @@ pub enum ConfigError {
     InvalidPrivateStream,
     #[error("risk limits must be finite and positive")]
     InvalidRisk,
+    #[error("order_prefix must contain 1-12 Binance-safe characters")]
+    InvalidOrderPrefix,
 }
 
 impl AppConfig {
@@ -43,6 +49,8 @@ impl AppConfig {
             .risk
             .validate()
             .map_err(|_| ConfigError::InvalidRisk)?;
+        validate_order_prefix(&self.exchange.order_prefix)
+            .map_err(|_| ConfigError::InvalidOrderPrefix)?;
         if self.exchange.public_stream_url.trim().is_empty()
             || self.exchange.api_url.trim().is_empty()
         {
