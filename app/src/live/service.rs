@@ -21,6 +21,7 @@ use super::{
 use crate::ports::{LiveConnector, PublishEvent, RunMode, TradingInstrument};
 
 pub type StrategyRuntimes = HashMap<String, LiveStrategyRuntime<BuiltinStrategy>>;
+const SAFETY_CANCEL_RETRY: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 struct AccountReadiness {
@@ -197,7 +198,7 @@ impl<C: LiveConnector> LiveService<C> {
         let safety_tick_ms = (self.safety.stale_market_timeout_ms / 4).clamp(25, 250);
         let mut safety_interval = time::interval(Duration::from_millis(safety_tick_ms));
         safety_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-        let mut cancellation_requests = HashSet::new();
+        let mut cancellation_requests = HashMap::new();
         if kill_switch_is_active(self.safety.kill_switch_file.as_deref()) {
             safety_state.trip_kill_switch();
             error!("external kill switch was active at startup; live execution is latched off");
@@ -384,7 +385,7 @@ impl<C: LiveConnector> LiveService<C> {
         &self,
         safety: &SafetyState,
         tx: &tokio::sync::mpsc::UnboundedSender<PublishEvent>,
-        requested: &mut HashSet<(String, u64)>,
+        requested: &mut HashMap<(String, u64), time::Instant>,
     ) {
         if !self.mode.allows_trading() {
             return;
@@ -395,11 +396,21 @@ impl<C: LiveConnector> LiveService<C> {
             }
             let orders = self.connector.open_orders(symbol);
             if orders.is_empty() {
-                requested.retain(|(requested_symbol, _)| requested_symbol != symbol);
+                requested.retain(|(requested_symbol, _), _| requested_symbol != symbol);
                 continue;
             }
+            let active_ids: HashSet<_> = orders.iter().map(|order| order.order_id).collect();
+            requested.retain(|(requested_symbol, order_id), _| {
+                requested_symbol != symbol || active_ids.contains(order_id)
+            });
             for order in orders {
-                if requested.insert((symbol.clone(), order.order_id)) {
+                let request_key = (symbol.clone(), order.order_id);
+                let now = time::Instant::now();
+                let retry_due = requested
+                    .get(&request_key)
+                    .is_none_or(|last_request| now.duration_since(*last_request) >= SAFETY_CANCEL_RETRY);
+                if retry_due {
+                    requested.insert(request_key, now);
                     warn!(%symbol, order_id = order.order_id, "canceling order due to live safety halt");
                     self.connector.cancel(symbol.clone(), order, tx.clone());
                 }
