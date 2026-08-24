@@ -249,4 +249,37 @@ mod tests {
             "same-side active order quantity must be included in max_position"
         );
     }
+
+    #[test]
+    fn sub_lot_quantity_cannot_be_rounded_up_after_risk_check() {
+        let connector = FakeConnector::default();
+        let (tx, _rx) = unbounded_channel();
+        let executor = LiveExecutor::new(
+            true,
+            RiskGate::new(RiskConfig {
+                max_order_qty: 0.0007,
+                max_order_notional: 1_000.0,
+                max_position: 1.0,
+                max_open_orders: 4,
+            }),
+        );
+        let mut runtime = runtime();
+
+        executor.execute(
+            &connector,
+            &tx,
+            &mut runtime,
+            vec![StrategyCommand::Submit {
+                order_id: 99,
+                price: 100.06,
+                qty: 0.0006,
+                side: Side::Buy,
+                time_in_force: TimeInForce::GTC,
+                order_type: OrdType::Limit,
+            }],
+        );
+
+        assert!(connector.submitted.lock().unwrap().is_empty());
+        assert_eq!(runtime.open_orders(), 0);
+    }
 }
