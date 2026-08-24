@@ -220,3 +220,51 @@ pub async fn reconcile_account_state(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use tokio::sync::{mpsc::unbounded_channel, oneshot};
+
+    use super::bootstrap_recovery_barrier;
+
+    #[tokio::test]
+    async fn bootstrap_recovery_replays_private_frames_before_ready() {
+        let (frame_tx, mut frame_rx) = unbounded_channel();
+        let (release_recovery_tx, release_recovery_rx) = oneshot::channel();
+        let observed = RefCell::new(Vec::new());
+
+        let producer = async move {
+            frame_tx.send("account").unwrap();
+            tokio::task::yield_now().await;
+            frame_tx.send("order").unwrap();
+            release_recovery_tx.send(()).unwrap();
+        };
+        let recovery = async {
+            release_recovery_rx.await.unwrap();
+            observed.borrow_mut().push("snapshot");
+            Ok::<_, ()>(())
+        };
+        let barrier = bootstrap_recovery_barrier(
+            &mut frame_rx,
+            recovery,
+            |frame| {
+                observed.borrow_mut().push(frame);
+                Ok(())
+            },
+            |()| {
+                observed.borrow_mut().push("ready");
+                Ok(())
+            },
+        );
+
+        let ((), result) = tokio::join!(producer, barrier);
+        result.unwrap();
+
+        assert_eq!(
+            observed.into_inner(),
+            vec!["snapshot", "account", "order", "ready"]
+        );
+    }
+}
