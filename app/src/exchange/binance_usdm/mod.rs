@@ -165,7 +165,7 @@ impl BinanceFutures {
         let client_order_ids = ClientOrderIdCodec::new(&config.order_prefix)
             .map_err(|_| BinanceFuturesError::InvalidOrderPrefix)?;
         let order_manager = Arc::new(Mutex::new(OrderManager::new(client_order_ids)));
-        let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret);
+        let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret)?;
         let (symbol_tx, _) = broadcast::channel(500);
 
         Ok(Self {

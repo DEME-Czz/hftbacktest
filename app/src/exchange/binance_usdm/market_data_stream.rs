@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn closed_event_sink_does_not_panic() {
-        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "");
+        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "").unwrap();
         let (event_tx, event_rx) = unbounded_channel();
         drop(event_rx);
         let (symbol_tx, _) = broadcast::channel(4);
@@ -436,7 +436,7 @@ mod tests {
     async fn snapshot_is_not_published_until_a_buffered_update_bridges_it() {
         use crate::exchange::binance_usdm::protocol::{rest, stream};
 
-        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "");
+        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "").unwrap();
         let (event_tx, mut event_rx) = unbounded_channel();
         let (symbol_tx, _) = broadcast::channel(4);
         let symbols: SharedSymbolSet = Default::default();
@@ -504,7 +504,7 @@ mod tests {
             subscriptions
         });
 
-        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "");
+        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "").unwrap();
         let (event_tx, _event_rx) = unbounded_channel();
         let (symbol_tx, _) = broadcast::channel(4);
         let symbols: SharedSymbolSet = Default::default();
@@ -533,7 +533,7 @@ mod tests {
     async fn pending_depth_buffer_is_bounded_when_snapshot_never_arrives() {
         use crate::exchange::binance_usdm::protocol::stream;
 
-        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "");
+        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "").unwrap();
         let (event_tx, _event_rx) = unbounded_channel();
         let (symbol_tx, _) = broadcast::channel(4);
         let symbols: SharedSymbolSet = Default::default();

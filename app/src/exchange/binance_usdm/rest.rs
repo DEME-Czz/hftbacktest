@@ -79,13 +79,15 @@ pub struct BinanceFuturesClient {
 }
 
 impl BinanceFuturesClient {
-    pub fn new(url: &str, api_key: &str, secret: &str) -> Self {
-        Self {
-            client: reqwest::Client::new(),
+    pub fn new(url: &str, api_key: &str, secret: &str) -> Result<Self, BinanceFuturesError> {
+        Ok(Self {
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
             url: url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             secret: secret.to_string(),
-        }
+        })
     }
 
     async fn get_noauth<T: for<'a> Deserialize<'a>>(
@@ -331,7 +333,8 @@ mod tests {
     async fn unsupported_order_shape_is_rejected_without_an_http_request() {
         use hftbacktest::types::{OrdType, TimeInForce};
 
-        let client = super::BinanceFuturesClient::new("http://127.0.0.1:9", "key", "secret");
+        let client =
+            super::BinanceFuturesClient::new("http://127.0.0.1:9", "key", "secret").unwrap();
         let unsupported_type = client
             .submit_order(
                 "client-id",
@@ -410,7 +413,8 @@ mod tests {
             &format!("http://{address}"),
             "sensitive-key",
             "sensitive-secret",
-        );
+        )
+        .unwrap();
         let _ = client.get_position_information().await;
 
         assert!(!server.await.unwrap(), "signed request followed a redirect");
