@@ -174,6 +174,7 @@ impl<C: LiveConnector> LiveService<C> {
     where
         F: Future<Output = ()>,
     {
+        let started_at = time::Instant::now();
         let (tx, mut rx) = unbounded_channel();
         for symbol in self.runtimes.keys() {
             self.connector.register(symbol.clone());
@@ -192,7 +193,6 @@ impl<C: LiveConnector> LiveService<C> {
         }
 
         let mut account_readiness = AccountReadiness::default();
-        let started_at = time::Instant::now();
         let mut safety_state = SafetyState::new(
             self.safety.stale_market_timeout_ms,
             self.runtimes.keys().cloned(),
@@ -242,21 +242,27 @@ impl<C: LiveConnector> LiveService<C> {
                             warn!(?error, "Binance live runtime error");
                         }
                     }
-                    Some(PublishEvent::BatchEnd { received_at: _ }) => {
+                    Some(PublishEvent::BatchEnd { received_at }) => {
+                        let now_ms = elapsed_ms(started_at);
+                        let batch_age_ms = u64::try_from(received_at.elapsed().as_millis())
+                            .unwrap_or(u64::MAX);
+                        let received_ms = now_ms.saturating_sub(batch_age_ms);
                         for runtime in self.runtimes.values_mut() {
                             if !runtime.take_depth_dirty() {
                                 continue;
                             }
-                            let now_ms = elapsed_ms(started_at);
                             let has_open_orders = !self
                                 .connector
                                 .open_orders(runtime.symbol())
                                 .is_empty();
                             safety_state.on_market_batch(
                                 runtime.symbol(),
-                                now_ms,
+                                received_ms,
                                 has_open_orders,
                             );
+                            if batch_age_ms >= self.safety.stale_market_timeout_ms {
+                                safety_state.halt_symbol(runtime.symbol());
+                            }
                             if self.mode.allows_trading()
                                 && (!account_readiness.contains(runtime.symbol())
                                     || !safety_state.can_submit(runtime.symbol(), now_ms))
