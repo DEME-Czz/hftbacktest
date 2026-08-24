@@ -144,18 +144,8 @@ impl OrderManager {
         client_order_id: &ClientOrderId,
         error: &BinanceFuturesError,
     ) -> Option<Order> {
-        match error {
-            BinanceFuturesError::OrderError { code: -2011, .. } => {
-                // The given order may no longer exist; it could have already been filled or
-                // canceled. But, it cannot determine the order status because it lacks the
-                // necessary information.
-                self.update_from_rest_fail(client_order_id, Some(Status::None))
-            }
-            error => {
-                error!(?error, "cancel error");
-                self.update_from_rest_fail(client_order_id, None)
-            }
-        }
+        error!(?error, "cancel error");
+        self.update_from_rest_fail(client_order_id, None)
     }
 
     pub fn update_from_rest_fail(

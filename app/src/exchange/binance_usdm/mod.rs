@@ -434,7 +434,35 @@ impl ExecutionVenue for BinanceFutures {
                         }
                     }
                     Err(error) => {
-                        if let Some(order) = lock_recover(&order_manager)
+                        if matches!(
+                            error,
+                            BinanceFuturesError::OrderError { code: -2011, .. }
+                        ) {
+                            match client.query_order(&client_order_id, &symbol).await {
+                                Ok(Some(response)) => {
+                                    if let Some(order) = lock_recover(&order_manager)
+                                        .update_from_rest(&client_order_id, &response)
+                                    {
+                                        let _ = tx.send(PublishEvent::LiveEvent(
+                                            LiveEvent::Order {
+                                                symbol: symbol.clone(),
+                                                order,
+                                            },
+                                        ));
+                                    }
+                                }
+                                Ok(None) | Err(_) => {
+                                    error!(
+                                        %symbol,
+                                        %client_order_id,
+                                        "order cancellation outcome is unresolved; execution latched off"
+                                    );
+                                    let _ = tx.send(PublishEvent::ExecutionUncertain {
+                                        symbol: symbol.clone(),
+                                    });
+                                }
+                            }
+                        } else if let Some(order) = lock_recover(&order_manager)
                             .update_cancel_fail(&client_order_id, &error)
                         {
                             let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
