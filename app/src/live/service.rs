@@ -230,7 +230,94 @@ fn live_symbol(event: &LiveEvent) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::AccountReadiness;
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    use hftbacktest::{
+        strategy::{BuiltinStrategy, BuiltinStrategyConfig, GridConfig},
+        types::{
+            Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT, LiveEvent, Order,
+        },
+    };
+    use tokio::{sync::mpsc::UnboundedSender, time};
+
+    use super::{AccountReadiness, LiveService, StrategyRuntimes};
+    use crate::{
+        live::{risk::RiskConfig, runtime::LiveStrategyRuntime},
+        ports::{ExecutionVenue, MarketDataSource, PublishEvent, RunMode},
+    };
+
+    #[derive(Clone, Default)]
+    struct PositionOnlyConnector {
+        submitted: Arc<Mutex<Vec<Order>>>,
+    }
+
+    impl MarketDataSource for PositionOnlyConnector {
+        fn register(&mut self, _symbol: String) {}
+        fn start_market_data(&mut self, _tx: UnboundedSender<PublishEvent>) {}
+    }
+
+    impl ExecutionVenue for PositionOnlyConnector {
+        fn start_account_stream(&self, tx: UnboundedSender<PublishEvent>) {
+            tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
+                symbol: "btcusdt".to_string(),
+                qty: 0.0,
+                exch_ts: 1,
+            }))
+            .unwrap();
+            for (ev, px) in [
+                (LOCAL_BID_DEPTH_EVENT, 100.0),
+                (LOCAL_ASK_DEPTH_EVENT, 101.0),
+            ] {
+                tx.send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                    symbol: "btcusdt".to_string(),
+                    event: Event {
+                        ev,
+                        exch_ts: 1,
+                        local_ts: 1,
+                        px,
+                        qty: 10.0,
+                        order_id: 0,
+                        ival: 0,
+                        fval: 0.0,
+                    },
+                }))
+                .unwrap();
+            }
+            tx.send(PublishEvent::BatchEnd).unwrap();
+        }
+
+        fn open_orders(&self, _symbol: &str) -> Vec<Order> {
+            Vec::new()
+        }
+
+        fn submit(&self, _symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
+            self.submitted.lock().unwrap().push(order);
+        }
+
+        fn cancel(&self, _symbol: String, _order: Order, _tx: UnboundedSender<PublishEvent>) {}
+    }
+
+    fn grid_runtimes() -> StrategyRuntimes {
+        let strategy = BuiltinStrategy::from_config(BuiltinStrategyConfig::Grid(GridConfig {
+            relative_half_spread: 0.0005,
+            relative_grid_interval: 0.0005,
+            grid_num: 1,
+            min_grid_step: 0.1,
+            skew: 0.00025,
+            order_qty: 0.001,
+            max_position: 0.003,
+        }))
+        .unwrap();
+        let mut runtimes = StrategyRuntimes::new();
+        runtimes.insert(
+            "btcusdt".to_string(),
+            LiveStrategyRuntime::new("btcusdt", 0.1, 0.001, strategy),
+        );
+        runtimes
+    }
 
     #[test]
     fn account_disconnect_invalidates_every_reconciled_symbol() {
@@ -247,5 +334,29 @@ mod tests {
         readiness.reconcile("btcusdt");
         assert!(readiness.contains("btcusdt"));
         assert!(!readiness.contains("ethusdt"));
+    }
+
+    #[tokio::test]
+    async fn position_without_order_recovery_never_enables_execution() {
+        let connector = PositionOnlyConnector::default();
+        let submitted = connector.submitted.clone();
+        let service = LiveService::new(
+            connector,
+            grid_runtimes(),
+            RiskConfig::default(),
+            RunMode::Execute,
+        );
+
+        service
+            .run_until(async {
+                time::sleep(Duration::from_millis(20)).await;
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            submitted.lock().unwrap().is_empty(),
+            "a position snapshot alone must not authorize order submission"
+        );
     }
 }
