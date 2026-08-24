@@ -148,6 +148,15 @@ pub fn read_npy<R: Read, D: NpyDTyped + Clone>(
     reader: &mut R,
     size: usize,
 ) -> std::io::Result<Data<D>> {
+    const PREAMBLE_LEN: usize = 10;
+
+    if size < PREAMBLE_LEN {
+        return Err(Error::new(
+            ErrorKind::UnexpectedEof,
+            "numpy file is shorter than its preamble",
+        ));
+    }
+
     let mut buf = DataPtr::new(size);
     let mut read_size = 0;
     while read_size < size {
@@ -174,7 +183,19 @@ pub fn read_npy<R: Read, D: NpyDTyped + Clone>(
         ));
     }
     let header_len = u16::from_le_bytes(buf[8..10].try_into().unwrap()) as usize;
-    let header = String::from_utf8(buf[10..10 + header_len].to_vec())
+    let header_end = PREAMBLE_LEN.checked_add(header_len).ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidData,
+            "numpy header length exceeds addressable memory",
+        )
+    })?;
+    if header_end > size {
+        return Err(Error::new(
+            ErrorKind::UnexpectedEof,
+            "numpy header extends past end of file",
+        ));
+    }
+    let header = String::from_utf8(buf[PREAMBLE_LEN..header_end].to_vec())
         .map_err(|error| Error::new(ErrorKind::InvalidData, error.to_string()))?;
     let header = NpyHeader::from_header(&header)?;
     if header.fortran_order {
@@ -192,13 +213,13 @@ pub fn read_npy<R: Read, D: NpyDTyped + Clone>(
             "only one-dimensional numpy arrays are supported",
         ));
     }
-    if !(10 + header_len).is_multiple_of(CACHE_LINE_SIZE) {
+    if !header_end.is_multiple_of(CACHE_LINE_SIZE) {
         return Err(Error::new(
             ErrorKind::InvalidData,
             "numpy data is not cache-line aligned",
         ));
     }
-    Ok(unsafe { Data::from_data_ptr(buf, 10 + header_len) })
+    Ok(unsafe { Data::from_data_ptr(buf, header_end) })
 }
 
 pub fn read_npy_file<D: NpyDTyped + Clone>(filepath: &str) -> std::io::Result<Data<D>> {

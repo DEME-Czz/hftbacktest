@@ -3,7 +3,7 @@ use std::{
     borrow::{Borrow, BorrowMut},
     fmt,
     fmt::{Debug, Formatter, Pointer},
-    mem::{forget, size_of},
+    mem::{align_of, forget, size_of},
     ops::{Deref, DerefMut, Index, IndexMut},
     ptr::{NonNull, slice_from_raw_parts_mut},
     slice::SliceIndex,
@@ -20,8 +20,7 @@ impl<T, const ALIGNMENT: usize> Drop for AlignedArray<T, ALIGNMENT> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
-            let layout =
-                alloc::Layout::from_size_align_unchecked(self.len * size_of::<T>(), ALIGNMENT);
+            let layout = Self::layout(self.len);
             alloc::dealloc(self.ptr.as_ptr() as _, layout);
         }
     }
@@ -32,28 +31,39 @@ impl<T, const ALIGNMENT: usize> AlignedArray<T, ALIGNMENT> {
     /// [`alloc::Layout`](https://doc.rust-lang.org/alloc/alloc/struct.Layout.html).
     /// "`size`, when rounded up to the nearest multiple of `align`, must not overflow `isize`
     /// (i.e. the rounded value must be less than or equal to `isize::MAX`)".
-    pub const MAX_CAPACITY: usize = isize::MAX as usize - (ALIGNMENT - 1);
+    pub const MAX_CAPACITY: usize =
+        (isize::MAX as usize).saturating_sub(ALIGNMENT.saturating_sub(1));
+
+    fn layout(len: usize) -> alloc::Layout {
+        assert_ne!(len, 0, "`len` cannot be zero.");
+        assert_ne!(
+            size_of::<T>(),
+            0,
+            "zero-sized element types are unsupported"
+        );
+        assert!(
+            ALIGNMENT >= align_of::<T>(),
+            "`ALIGNMENT` cannot be smaller than the element alignment"
+        );
+        let size = len
+            .checked_mul(size_of::<T>())
+            .expect("`len * size_of::<T>()` cannot overflow");
+        alloc::Layout::from_size_align(size, ALIGNMENT).expect(
+            "`ALIGNMENT` must be a non-zero power of two and the layout must fit in isize::MAX",
+        )
+    }
 
     #[inline]
     pub fn new(len: usize) -> Self {
-        if len == 0 {
-            panic!("`len` cannot be zero.");
-        } else {
-            assert!(
-                len * size_of::<T>() <= Self::MAX_CAPACITY,
-                "`len * size_of::<T>()` cannot exceed isize::MAX - (ALIGNMENT - 1)"
-            );
-            let ptr = unsafe {
-                let layout =
-                    alloc::Layout::from_size_align_unchecked(len * size_of::<T>(), ALIGNMENT);
-                let ptr = alloc::alloc(layout);
-                if ptr.is_null() {
-                    alloc::handle_alloc_error(layout);
-                }
-                NonNull::new_unchecked(slice_from_raw_parts_mut(ptr as *mut T, len))
-            };
-            Self { ptr, len }
-        }
+        let layout = Self::layout(len);
+        let ptr = unsafe {
+            let ptr = alloc::alloc(layout);
+            if ptr.is_null() {
+                alloc::handle_alloc_error(layout);
+            }
+            NonNull::new_unchecked(slice_from_raw_parts_mut(ptr as *mut T, len))
+        };
+        Self { ptr, len }
     }
 
     #[inline]
