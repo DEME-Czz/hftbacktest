@@ -92,6 +92,7 @@ impl AppConfig {
                 &self.exchange.api_url,
                 &self.exchange.public_stream_url,
                 &private_url,
+                self.exchange.allow_test_endpoints,
             ) {
                 return Err(ConfigError::UntrustedExecutionEndpoint);
             }
@@ -100,7 +101,12 @@ impl AppConfig {
     }
 }
 
-fn matched_execution_environment(api: &str, public_stream: &str, private_stream: &str) -> bool {
+fn matched_execution_environment(
+    api: &str,
+    public_stream: &str,
+    private_stream: &str,
+    allow_test_endpoints: bool,
+) -> bool {
     let (Ok(api), Ok(public_stream), Ok(private_stream)) = (
         reqwest::Url::parse(api),
         reqwest::Url::parse(public_stream),
@@ -108,7 +114,11 @@ fn matched_execution_environment(api: &str, public_stream: &str, private_stream:
     ) else {
         return false;
     };
-    if is_loopback(&api) && is_loopback(&public_stream) && is_loopback(&private_stream) {
+    if allow_test_endpoints
+        && is_loopback(&api)
+        && is_loopback(&public_stream)
+        && is_loopback(&private_stream)
+    {
         return true;
     }
     let Some(api_host) = api.host_str() else {

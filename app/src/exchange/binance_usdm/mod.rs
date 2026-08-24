@@ -129,6 +129,8 @@ pub struct BinanceConfig {
     pub api_key: String,
     #[serde(default)]
     pub secret: String,
+    #[serde(default)]
+    pub allow_test_endpoints: bool,
 }
 
 impl std::fmt::Debug for BinanceConfig {
@@ -139,6 +141,7 @@ impl std::fmt::Debug for BinanceConfig {
             .field("private_stream_url", &self.private_stream_url)
             .field("api_url", &self.api_url)
             .field("order_prefix", &self.order_prefix)
+            .field("allow_test_endpoints", &self.allow_test_endpoints)
             .field(
                 "credentials_configured",
                 &(!self.api_key.is_empty() && !self.secret.is_empty()),
@@ -544,6 +547,7 @@ mod tests {
             order_prefix: "strategy-a".to_string(),
             api_key: "key".to_string(),
             secret: "secret".to_string(),
+            allow_test_endpoints: true,
         })
         .unwrap();
         let mut order = Order::new(
