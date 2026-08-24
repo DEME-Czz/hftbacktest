@@ -875,4 +875,78 @@ mod tests {
         assert!(requests[0].starts_with("DELETE /fapi/v1/order "));
         assert!(requests[1].starts_with("GET /fapi/v1/order?"));
     }
+
+    #[tokio::test]
+    async fn duplicate_cancel_is_coalesced_while_the_first_request_is_in_flight() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let server_requests = requests.clone();
+        let (first_seen_tx, first_seen_rx) = oneshot::channel();
+        let (release_tx, mut release_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut first_stream, _) = listener.accept().await.unwrap();
+            let first = read_http_request(&mut first_stream).await;
+            let client_order_id = form_value(request_body(&first), "origClientOrderId")
+                .unwrap()
+                .to_string();
+            server_requests.lock().await.push(first);
+            first_seen_tx.send(()).unwrap();
+
+            tokio::select! {
+                release = &mut release_rx => {
+                    release.unwrap();
+                }
+                accepted = listener.accept() => {
+                    let (mut duplicate_stream, _) = accepted.unwrap();
+                    let duplicate = read_http_request(&mut duplicate_stream).await;
+                    server_requests.lock().await.push(duplicate);
+                    release_rx.await.unwrap();
+                    write_order_response(&mut duplicate_stream, &client_order_id, "CANCELED").await;
+                }
+            }
+            write_order_response(&mut first_stream, &client_order_id, "CANCELED").await;
+        });
+
+        let connector = BinanceFutures::new(BinanceConfig {
+            public_stream_url: "ws://127.0.0.1/".to_string(),
+            private_stream_url: "ws://127.0.0.1/{listen_key}".to_string(),
+            api_url: format!("http://{address}"),
+            order_prefix: "strategy-a".to_string(),
+            api_key: "key".to_string(),
+            secret: "secret".to_string(),
+            allow_test_endpoints: true,
+        })
+        .unwrap();
+        let mut order = Order::new(
+            87,
+            1_000,
+            0.1,
+            1.0,
+            Side::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        );
+        order.status = Status::New;
+        super::lock_recover(&connector.order_manager)
+            .prepare_client_order_id("btcusdt".to_string(), order.clone())
+            .unwrap();
+        let (tx, _rx) = unbounded_channel();
+
+        connector.cancel("btcusdt".to_string(), order.clone(), tx.clone());
+        first_seen_rx.await.unwrap();
+        connector.cancel("btcusdt".to_string(), order, tx);
+
+        time::sleep(Duration::from_millis(75)).await;
+        assert_eq!(
+            requests.lock().await.len(),
+            1,
+            "only one DELETE may be in flight per client order id"
+        );
+        release_tx.send(()).unwrap();
+        time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }
