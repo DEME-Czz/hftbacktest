@@ -311,8 +311,15 @@ impl BinanceFuturesClient {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::{side_str, sign_hmac_sha256};
     use hftbacktest::types::Side;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        time,
+    };
 
     #[test]
     fn unsupported_order_side_is_rejected_without_panicking() {
@@ -368,5 +375,44 @@ mod tests {
             signature,
             "3c661234138461fcc7a7d8746c6558c9842d4e10870d2ecbedf7777cad694af9"
         );
+    }
+
+    #[tokio::test]
+    async fn signed_requests_never_follow_http_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let _ = first.read(&mut request).await.unwrap();
+            let redirect = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/capture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            first.write_all(redirect.as_bytes()).await.unwrap();
+            drop(first);
+
+            match time::timeout(Duration::from_millis(500), listener.accept()).await {
+                Ok(Ok((mut redirected, _))) => {
+                    let _ = redirected.read(&mut request).await.unwrap();
+                    redirected
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]",
+                        )
+                        .await
+                        .unwrap();
+                    true
+                }
+                _ => false,
+            }
+        });
+
+        let client = super::BinanceFuturesClient::new(
+            &format!("http://{address}"),
+            "sensitive-key",
+            "sensitive-secret",
+        );
+        let _ = client.get_position_information().await;
+
+        assert!(!server.await.unwrap(), "signed request followed a redirect");
     }
 }
