@@ -440,7 +440,7 @@ mod tests {
         BinanceFuturesError, id::ClientOrderIdCodec, protocol::rest::OrderResponse,
     };
 
-    fn open_order(client_order_id: &str) -> OrderResponse {
+    fn open_order_for(client_order_id: &str, symbol: &str) -> OrderResponse {
         serde_json::from_str(
             &json!({
                 "clientOrderId": client_order_id,
@@ -457,7 +457,7 @@ mod tests {
                 "status": "PARTIALLY_FILLED",
                 "stopPrice": "0",
                 "closePosition": false,
-                "symbol": "BTCUSDT",
+                "symbol": symbol,
                 "timeInForce": "GTC",
                 "type": "LIMIT",
                 "origType": "LIMIT",
@@ -471,6 +471,10 @@ mod tests {
             .to_string(),
         )
         .unwrap()
+    }
+
+    fn open_order(client_order_id: &str) -> OrderResponse {
+        open_order_for(client_order_id, "BTCUSDT")
     }
 
     #[test]
@@ -509,5 +513,31 @@ mod tests {
 
         assert!(matches!(error, BinanceFuturesError::MalformedClientOrderId));
         assert!(manager.active_orders("btcusdt").is_empty());
+    }
+
+    #[test]
+    fn multi_symbol_recovery_rolls_back_every_symbol_on_any_conflict() {
+        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
+        let btc_id = codec.encode(42);
+        let mut manager = OrderManager::new(codec);
+        let snapshots = vec![
+            (
+                "btcusdt".to_string(),
+                0.1,
+                vec![open_order_for(&btc_id, "BTCUSDT")],
+            ),
+            (
+                "ethusdt".to_string(),
+                0.01,
+                vec![open_order_for(
+                    "strategy-a-v1-not-base36-AbCd12",
+                    "ETHUSDT",
+                )],
+            ),
+        ];
+
+        assert!(manager.reconcile_all_open_orders(&snapshots).is_err());
+        assert!(manager.active_orders("btcusdt").is_empty());
+        assert!(manager.active_orders("ethusdt").is_empty());
     }
 }
