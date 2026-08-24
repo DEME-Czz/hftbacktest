@@ -586,14 +586,15 @@ mod tests {
         manager
             .order_id_map
             .remove(&crate::exchange::binance_usdm::id::RefSymbolOrderId::new(
-                "btcusdt",
-                77,
+                "btcusdt", 77,
             ));
 
         let response = open_order(&client_order_id);
-        assert!(manager
-            .update_from_rest(&client_order_id, &response)
-            .is_none());
+        assert!(
+            manager
+                .update_from_rest(&client_order_id, &response)
+                .is_none()
+        );
         assert!(manager.active_orders("btcusdt").is_empty());
     }
 }

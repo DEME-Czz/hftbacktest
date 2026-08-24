@@ -132,17 +132,19 @@ fn matched_execution_environment(
     };
     matches!(
         (api_host, public_host, private_host),
-        ("fapi.binance.com", "fstream.binance.com", "fstream.binance.com")
-            | (
-                "demo-fapi.binance.com",
-                "demo-fstream.binance.com",
-                "demo-fstream.binance.com"
-            )
-            | (
-                "testnet.binancefuture.com",
-                "stream.binancefuture.com",
-                "stream.binancefuture.com"
-            )
+        (
+            "fapi.binance.com",
+            "fstream.binance.com",
+            "fstream.binance.com"
+        ) | (
+            "demo-fapi.binance.com",
+            "demo-fstream.binance.com",
+            "demo-fstream.binance.com"
+        ) | (
+            "testnet.binancefuture.com",
+            "stream.binancefuture.com",
+            "stream.binancefuture.com"
+        )
     )
 }
 
