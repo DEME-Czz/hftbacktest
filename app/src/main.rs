@@ -21,8 +21,6 @@ struct Args {
     /// Actually submit/cancel orders. Without this flag the runtime is decision-only dry-run.
     #[arg(long)]
     execute: bool,
-    /// Optional symbols to enable. If omitted all configured strategies are enabled.
-    symbols: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -70,14 +68,10 @@ async fn main() {
         }
     }
 
-    let enabled: HashSet<String> = args.symbols.iter().map(|s| s.to_lowercase()).collect();
     let mut runtimes: HashMap<String, LiveStrategyRuntime<BuiltinStrategy>> = HashMap::new();
 
     for strategy_config in &runtime_config.strategies {
         let symbol = strategy_config.symbol.to_lowercase();
-        if !enabled.is_empty() && !enabled.contains(&symbol) {
-            continue;
-        }
         if runtimes.contains_key(&symbol) {
             error!(%symbol, "only one built-in strategy per symbol is currently supported");
             exit(2);
@@ -99,11 +93,6 @@ async fn main() {
                 strategy,
             ),
         );
-    }
-
-    if runtimes.is_empty() {
-        error!("none of the requested symbols has a configured strategy");
-        exit(2);
     }
 
     let mut connector = BinanceFutures::build_from(&config)
