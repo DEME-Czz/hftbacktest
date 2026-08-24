@@ -1,29 +1,108 @@
 # Binance USD-M Futures Testnet configuration.
+#
+# Copy this file to app/examples/local.toml before running locally.
+# Do not commit a local.toml that contains API credentials.
+
+# Public market-data WebSocket endpoint.
+# Used for depth and trade streams; no API key is required.
 public_stream_url = "wss://stream.binancefuture.com/ws"
+
+# Private user-data WebSocket template.
+# {listen_key} is replaced at runtime with the listenKey obtained from Binance.
+# Used for order and account/position updates when API credentials are configured.
 private_stream_url = "wss://stream.binancefuture.com/ws/{listen_key}"
+
+# Binance USD-M Futures Testnet REST endpoint.
+# Used for depth snapshots, position reconciliation, submit/modify/cancel orders,
+# and listenKey lifecycle operations.
 api_url = "https://testnet.binancefuture.com"
 
+# Prefix used when generating Binance client order IDs.
+# Keep it short and identifiable so strategy orders can be distinguished from
+# orders created manually or by another program.
 order_prefix = "hfttest"
+
+# Binance Futures Testnet credentials.
+# Dry-run market-data/strategy evaluation can leave these empty.
+# --execute requires both values to be non-empty.
 api_key = ""
 secret = ""
 
-# Global live risk gate. These values are intentionally conservative for BTCUSDT testnet.
+# -----------------------------------------------------------------------------
+# Global live risk gate
+# -----------------------------------------------------------------------------
+# Every StrategyCommand must pass this layer before it can reach Binance.
+# Strategy-level limits do not replace these global limits.
 [risk]
+
+# Maximum quantity allowed for a single submitted order, in base-asset units.
+# Example: BTCUSDT 0.001 means at most 0.001 BTC per order.
 max_order_qty = 0.001
+
+# Maximum notional value allowed for a single order, in quote-asset units.
+# For BTCUSDT this is approximately price * quantity in USDT.
 max_order_notional = 100.0
+
+# Maximum absolute live position allowed for one symbol, in base-asset units.
+# Risk evaluation also accounts for same-direction active orders so that
+# multiple grid orders filling together cannot silently exceed this limit.
 max_position = 0.003
+
+# Maximum number of simultaneously active orders allowed for one symbol.
 max_open_orders = 4
 
-# One built-in strategy per symbol. Add another [[strategies]] block for another symbol.
+# -----------------------------------------------------------------------------
+# Built-in strategy configuration
+# -----------------------------------------------------------------------------
+# One [[strategies]] block creates one strategy runtime for that symbol.
+# Add another block to run another symbol. The main runtime automatically
+# subscribes all symbols declared here; symbols are not passed on the CLI.
 [[strategies]]
+
+# Binance contract symbol. Runtime normalizes it internally for stream handling.
 symbol = "BTCUSDT"
+
+# Built-in strategy type. Currently supported: "grid".
 kind = "grid"
+
+# Minimum valid price increment for this contract.
+# BTCUSDT example: 0.1 means generated order prices are aligned to 0.1 USDT.
+# This value must match the current Binance contract rule.
 tick_size = 0.1
+
+# Minimum quantity increment for this contract.
+# BTCUSDT example: 0.001 means order quantities are aligned to 0.001 BTC.
+# This value must match the current Binance contract rule.
 lot_size = 0.001
+
+# Half of the target bid/ask spread relative to the strategy reference price.
+# 0.0005 = 0.05% on each side before grid layering/skew adjustments.
+# Larger values quote farther from the market; smaller values quote more aggressively.
 relative_half_spread = 0.0005
+
+# Relative spacing between adjacent grid levels.
+# 0.0005 = approximately 0.05% price spacing before tick-size rounding.
 relative_grid_interval = 0.0005
+
+# Number of grid levels generated on each side of the book.
+# grid_num = 2 can generate up to 2 bids + 2 asks before risk/position filtering.
 grid_num = 2
+
+# Absolute lower bound for the distance between grid levels, in quote-price units.
+# The effective grid step will not be smaller than this value.
 min_grid_step = 0.1
+
+# Inventory-skew strength.
+# Non-zero skew moves quotes according to the current position so the strategy
+# becomes less willing to add to an existing inventory and more willing to reduce it.
+# Larger values create stronger inventory correction.
 skew = 0.00025
+
+# Quantity of each grid order, in base-asset units.
+# BTCUSDT 0.001 means each generated grid order targets 0.001 BTC.
 order_qty = 0.001
+
+# Strategy-level absolute position limit, in base-asset units.
+# GridStrategy stops generating orders that would increase inventory beyond this value.
+# Keep this <= risk.max_position so strategy intent and the final RiskGate agree.
 max_position = 0.003
