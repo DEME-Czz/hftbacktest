@@ -293,92 +293,84 @@ impl ExecutionVenue for BinanceFutures {
     ) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
-        tokio::spawn(async move {
-            let client_order_id =
-                lock_recover(&order_manager).prepare_client_order_id(symbol.clone(), order.clone());
+        let Some(client_order_id) =
+            lock_recover(&order_manager).prepare_client_order_id(symbol.clone(), order.clone())
+        else {
+            warn!(?order, "duplicate client order id; expiring local request");
+            order.req = Status::None;
+            order.status = Status::Expired;
+            let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
+            return;
+        };
 
-            match client_order_id {
-                Some(client_order_id) => {
-                    let result = client
-                        .submit_order(
-                            &client_order_id,
-                            &symbol,
-                            order.side,
-                            order.price_tick as f64 * order.tick_size,
-                            order.tick_size,
-                            order.qty,
-                            lot_size,
-                            order.order_type,
-                            order.time_in_force,
-                        )
-                        .await;
-                    match result {
-                        Ok(resp) => {
+        tokio::spawn(async move {
+            let result = client
+                .submit_order(
+                    &client_order_id,
+                    &symbol,
+                    order.side,
+                    order.price_tick as f64 * order.tick_size,
+                    order.tick_size,
+                    order.qty,
+                    lot_size,
+                    order.order_type,
+                    order.time_in_force,
+                )
+                .await;
+            match result {
+                Ok(resp) => {
+                    if let Some(order) = lock_recover(&order_manager)
+                        .update_from_rest(&client_order_id, &resp)
+                    {
+                        let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
+                    }
+                }
+                Err(error) => {
+                    if error.submission_is_ambiguous() {
+                        let mut confirmed = None;
+                        for delay_ms in [50_u64, 150, 300] {
+                            match client.query_order(&client_order_id, &symbol).await {
+                                Ok(Some(response)) => {
+                                    confirmed = Some(response);
+                                    break;
+                                }
+                                Ok(None) | Err(_) => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
+                                        .await;
+                                }
+                            }
+                        }
+                        if let Some(response) = confirmed {
                             if let Some(order) = lock_recover(&order_manager)
-                                .update_from_rest(&client_order_id, &resp)
+                                .update_from_rest(&client_order_id, &response)
                             {
                                 let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
                                     symbol,
                                     order,
                                 }));
                             }
+                            return;
                         }
-                        Err(error) => {
-                            if error.submission_is_ambiguous() {
-                                let mut confirmed = None;
-                                for delay_ms in [50_u64, 150, 300] {
-                                    match client.query_order(&client_order_id, &symbol).await {
-                                        Ok(Some(response)) => {
-                                            confirmed = Some(response);
-                                            break;
-                                        }
-                                        Ok(None) | Err(_) => {
-                                            tokio::time::sleep(std::time::Duration::from_millis(
-                                                delay_ms,
-                                            ))
-                                            .await;
-                                        }
-                                    }
-                                }
-                                if let Some(response) = confirmed {
-                                    if let Some(order) = lock_recover(&order_manager)
-                                        .update_from_rest(&client_order_id, &response)
-                                    {
-                                        let _ =
-                                            tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                                symbol,
-                                                order,
-                                            }));
-                                    }
-                                    return;
-                                }
-                                error!(
-                                    %symbol,
-                                    %client_order_id,
-                                    "order submission outcome is unresolved; execution latched off"
-                                );
-                                let _ = tx.send(PublishEvent::ExecutionUncertain {
-                                    symbol: symbol.clone(),
-                                });
-                            } else if let Some(order) = lock_recover(&order_manager)
-                                .update_submit_fail(&client_order_id, &error)
-                            {
-                                let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol: symbol.clone(),
-                                    order,
-                                }));
-                            }
-                            let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Error(
-                                LiveError::with(ErrorKind::OrderError, error.into()),
-                            )));
-                        }
+                        error!(
+                            %symbol,
+                            %client_order_id,
+                            "order submission outcome is unresolved; execution latched off"
+                        );
+                        let _ = tx.send(PublishEvent::ExecutionUncertain {
+                            symbol: symbol.clone(),
+                        });
+                    } else if let Some(order) = lock_recover(&order_manager)
+                        .update_submit_fail(&client_order_id, &error)
+                    {
+                        let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                            symbol: symbol.clone(),
+                            order,
+                        }));
                     }
-                }
-                None => {
-                    warn!(?order, "duplicate client order id; expiring local request");
-                    order.req = Status::None;
-                    order.status = Status::Expired;
-                    let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
+                    let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                        ErrorKind::OrderError,
+                        error.into(),
+                    ))));
                 }
             }
         });
