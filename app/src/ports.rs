@@ -58,7 +58,13 @@ pub trait ExecutionVenue {
         tx: UnboundedSender<PublishEvent>,
     );
     fn open_orders(&self, symbol: &str) -> Vec<Order>;
-    fn submit(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>);
+    fn submit(
+        &self,
+        symbol: String,
+        order: Order,
+        lot_size: f64,
+        tx: UnboundedSender<PublishEvent>,
+    );
     fn cancel(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>);
 }
 

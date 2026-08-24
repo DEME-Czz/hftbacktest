@@ -12,10 +12,7 @@ use std::{
 };
 
 use chrono::Utc;
-use hftbacktest::{
-    prelude::get_precision,
-    types::{ErrorKind, LiveError, LiveEvent, Order, Status, Value},
-};
+use hftbacktest::types::{ErrorKind, LiveError, LiveEvent, Order, Status, Value};
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::sync::{broadcast, broadcast::Sender, mpsc::UnboundedSender};
@@ -282,7 +279,13 @@ impl ExecutionVenue for BinanceFutures {
         lock_recover(&self.order_manager).active_orders(symbol)
     }
 
-    fn submit(&self, symbol: String, mut order: Order, tx: UnboundedSender<PublishEvent>) {
+    fn submit(
+        &self,
+        symbol: String,
+        mut order: Order,
+        lot_size: f64,
+        tx: UnboundedSender<PublishEvent>,
+    ) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         tokio::spawn(async move {
@@ -297,8 +300,9 @@ impl ExecutionVenue for BinanceFutures {
                             &symbol,
                             order.side,
                             order.price_tick as f64 * order.tick_size,
-                            get_precision(order.tick_size),
+                            order.tick_size,
                             order.qty,
+                            lot_size,
                             order.order_type,
                             order.time_in_force,
                         )
@@ -551,7 +555,7 @@ mod tests {
         );
         order.req = Status::New;
         let (tx, mut rx) = unbounded_channel();
-        connector.submit("btcusdt".to_string(), order, tx);
+        connector.submit("btcusdt".to_string(), order, 0.001, tx);
 
         let recovered = loop {
             let event = time::timeout(Duration::from_secs(2), rx.recv())

@@ -167,6 +167,9 @@ where
     pub fn tick_size(&self) -> f64 {
         self.depth.tick_size()
     }
+    pub fn lot_size(&self) -> f64 {
+        self.depth.lot_size()
+    }
     pub fn position(&self) -> f64 {
         self.position
     }

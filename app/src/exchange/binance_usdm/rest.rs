@@ -56,6 +56,20 @@ fn sign_hmac_sha256(secret: &str, message: &str) -> Result<String, BinanceFuture
     Ok(signature)
 }
 
+fn decimal_precision(step: f64) -> Result<usize, BinanceFuturesError> {
+    if !step.is_finite() || step <= 0.0 {
+        return Err(BinanceFuturesError::InvalidRequest);
+    }
+    for precision in 0_i32..=15 {
+        let scaled = step * 10_f64.powi(precision);
+        let tolerance = scaled.abs().max(1.0) * f64::EPSILON * 8.0;
+        if (scaled - scaled.round()).abs() <= tolerance {
+            return Ok(precision as usize);
+        }
+    }
+    Err(BinanceFuturesError::InvalidRequest)
+}
+
 #[derive(Clone)]
 pub struct BinanceFuturesClient {
     client: reqwest::Client,
@@ -197,11 +211,14 @@ impl BinanceFuturesClient {
         symbol: &str,
         side: Side,
         price: f64,
-        price_precision: usize,
+        tick_size: f64,
         quantity: f64,
+        lot_size: f64,
         order_type: OrdType,
         time_in_force: TimeInForce,
     ) -> Result<OrderResponse, BinanceFuturesError> {
+        let price_precision = decimal_precision(tick_size)?;
+        let quantity_precision = decimal_precision(lot_size)?;
         let mut body = String::with_capacity(220);
         body.push_str("newClientOrderId=");
         body.push_str(client_order_id);
@@ -216,7 +233,7 @@ impl BinanceFuturesClient {
             body.push_str(time_in_force_str(time_in_force)?);
         }
         body.push_str("&quantity=");
-        body.push_str(&format!("{quantity:.5}"));
+        body.push_str(&format!("{quantity:.quantity_precision$}"));
         body.push_str("&type=");
         body.push_str(order_type_str(order_type)?);
         body.push_str("&newOrderRespType=RESULT");
@@ -314,7 +331,8 @@ mod tests {
                 "BTCUSDT",
                 Side::Buy,
                 100.0,
-                1,
+                0.1,
+                0.001,
                 0.001,
                 OrdType::Unsupported,
                 TimeInForce::GTC,
@@ -328,7 +346,8 @@ mod tests {
                 "BTCUSDT",
                 Side::Buy,
                 100.0,
-                1,
+                0.1,
+                0.001,
                 0.001,
                 OrdType::Limit,
                 TimeInForce::Unsupported,

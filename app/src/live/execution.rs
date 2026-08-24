@@ -27,6 +27,14 @@ impl LiveExecutor {
         commands: Vec<StrategyCommand>,
     ) {
         for command in commands {
+            let Some(command) = normalize_command(command, runtime.tick_size(), runtime.lot_size())
+            else {
+                warn!(
+                    symbol = runtime.symbol(),
+                    "strategy command is smaller than one exchange lot"
+                );
+                continue;
+            };
             let same_side_order_exposure = match &command {
                 StrategyCommand::Submit { side, .. } => runtime.active_order_exposure(*side),
                 StrategyCommand::Modify { .. } | StrategyCommand::Cancel { .. } => 0.0,
@@ -73,7 +81,12 @@ impl LiveExecutor {
                     }
                     let order =
                         runtime.stage_submit(order_id, price, qty, side, time_in_force, order_type);
-                    connector.submit(runtime.symbol().to_string(), order, tx.clone());
+                    connector.submit(
+                        runtime.symbol().to_string(),
+                        order,
+                        runtime.lot_size(),
+                        tx.clone(),
+                    );
                 }
                 StrategyCommand::Cancel { order_id } => {
                     if let Some(order) = runtime.stage_cancel(order_id) {
@@ -89,6 +102,30 @@ impl LiveExecutor {
             }
         }
     }
+}
+
+fn normalize_command(
+    mut command: StrategyCommand,
+    tick_size: f64,
+    lot_size: f64,
+) -> Option<StrategyCommand> {
+    match &mut command {
+        StrategyCommand::Submit { price, qty, .. } | StrategyCommand::Modify { price, qty, .. } => {
+            if price.is_finite() && *price > 0.0 {
+                *price = (*price / tick_size).round() * tick_size;
+            }
+            if qty.is_finite() && *qty > 0.0 {
+                let lots = *qty / lot_size;
+                let tolerance = lots.abs().max(1.0) * f64::EPSILON * 8.0;
+                *qty = (lots + tolerance).floor() * lot_size;
+                if *qty <= 0.0 {
+                    return None;
+                }
+            }
+        }
+        StrategyCommand::Cancel { .. } => {}
+    }
+    Some(command)
 }
 
 #[cfg(test)]
@@ -129,7 +166,13 @@ mod tests {
         fn open_orders(&self, _symbol: &str) -> Vec<Order> {
             Vec::new()
         }
-        fn submit(&self, symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
+        fn submit(
+            &self,
+            symbol: String,
+            order: Order,
+            _lot_size: f64,
+            _tx: UnboundedSender<PublishEvent>,
+        ) {
             self.submitted.lock().unwrap().push((symbol, order));
         }
         fn cancel(&self, symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {

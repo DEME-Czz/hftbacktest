@@ -455,7 +455,13 @@ mod tests {
             self.open_orders.lock().unwrap().clone()
         }
 
-        fn submit(&self, _symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
+        fn submit(
+            &self,
+            _symbol: String,
+            order: Order,
+            _lot_size: f64,
+            _tx: UnboundedSender<PublishEvent>,
+        ) {
             self.submitted.lock().unwrap().push(order);
         }
 
