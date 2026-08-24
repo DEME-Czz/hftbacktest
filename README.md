@@ -270,6 +270,8 @@ Testnet execute：
 ./target/release/hft-app app/examples/local.toml --execute
 ```
 
+当前验收目标是 Demo/Testnet。Mainnet 前仍需补齐重启后的存量订单恢复、REST 不确定结果查询、stale-market 自动撤单和外部 kill switch；详见 `docs/live.md`。
+
 Collector：
 
 ```bash
