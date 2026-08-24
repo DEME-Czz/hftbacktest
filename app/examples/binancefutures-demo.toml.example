@@ -1,108 +1,108 @@
-# Binance USD-M Futures Testnet configuration.
+# Binance USD-M Futures 测试网配置
 #
-# Copy this file to app/examples/local.toml before running locally.
-# Do not commit a local.toml that contains API credentials.
+# 本地运行前建议复制为 app/examples/local.toml。
+# local.toml 中如果填写了 API Key / Secret，请勿提交到 Git。
 
-# Public market-data WebSocket endpoint.
-# Used for depth and trade streams; no API key is required.
+# 公共行情 WebSocket 地址。
+# 用于接收深度（Depth）和成交（Trade）数据，不需要 API Key。
 public_stream_url = "wss://stream.binancefuture.com/ws"
 
-# Private user-data WebSocket template.
-# {listen_key} is replaced at runtime with the listenKey obtained from Binance.
-# Used for order and account/position updates when API credentials are configured.
+# 私有用户数据 WebSocket 地址模板。
+# 程序启动后会使用 Binance 返回的 listenKey 替换 {listen_key}。
+# 配置 API 凭证后，用于接收订单状态、账户和持仓更新。
 private_stream_url = "wss://stream.binancefuture.com/ws/{listen_key}"
 
-# Binance USD-M Futures Testnet REST endpoint.
-# Used for depth snapshots, position reconciliation, submit/modify/cancel orders,
-# and listenKey lifecycle operations.
+# Binance USD-M Futures 测试网 REST API 地址。
+# 用于获取深度快照、同步持仓、下单、改单、撤单以及维护 listenKey。
 api_url = "https://testnet.binancefuture.com"
 
-# Prefix used when generating Binance client order IDs.
-# Keep it short and identifiable so strategy orders can be distinguished from
-# orders created manually or by another program.
+# Binance clientOrderId 的前缀。
+# 建议保持简短且具有辨识度，便于区分本策略产生的订单、手工订单和其他程序订单。
 order_prefix = "hfttest"
 
-# Binance Futures Testnet credentials.
-# Dry-run market-data/strategy evaluation can leave these empty.
-# --execute requires both values to be non-empty.
+# Binance Futures 测试网 API 凭证。
+# 仅运行行情和策略 dry-run 时可以留空。
+# 使用 --execute 真正向测试网发送订单时，api_key 和 secret 都必须填写。
 api_key = ""
 secret = ""
 
 # -----------------------------------------------------------------------------
-# Global live risk gate
+# 全局实盘风控
 # -----------------------------------------------------------------------------
-# Every StrategyCommand must pass this layer before it can reach Binance.
-# Strategy-level limits do not replace these global limits.
+# 所有 StrategyCommand 在发送到 Binance 前都必须通过这一层检查。
+# 策略自身的限制不能替代这里的全局风控。
 [risk]
 
-# Maximum quantity allowed for a single submitted order, in base-asset units.
-# Example: BTCUSDT 0.001 means at most 0.001 BTC per order.
+# 单笔订单允许的最大数量，单位为基础资产。
+# 例如 BTCUSDT 配置 0.001，表示单笔订单最多允许 0.001 BTC。
 max_order_qty = 0.001
 
-# Maximum notional value allowed for a single order, in quote-asset units.
-# For BTCUSDT this is approximately price * quantity in USDT.
+# 单笔订单允许的最大名义价值，单位为报价资产。
+# 对 BTCUSDT 来说，名义价值约等于：订单价格 × BTC 数量，单位为 USDT。
 max_order_notional = 100.0
 
-# Maximum absolute live position allowed for one symbol, in base-asset units.
-# Risk evaluation also accounts for same-direction active orders so that
-# multiple grid orders filling together cannot silently exceed this limit.
+# 单个交易标的允许的最大绝对持仓，单位为基础资产。
+# 风控还会把同方向未成交活动订单计算进去，防止多个 Grid 挂单同时成交后突破持仓上限。
 max_position = 0.003
 
-# Maximum number of simultaneously active orders allowed for one symbol.
+# 单个交易标的允许同时存在的最大活动订单数量。
 max_open_orders = 4
 
 # -----------------------------------------------------------------------------
-# Built-in strategy configuration
+# 内置策略配置
 # -----------------------------------------------------------------------------
-# One [[strategies]] block creates one strategy runtime for that symbol.
-# Add another block to run another symbol. The main runtime automatically
-# subscribes all symbols declared here; symbols are not passed on the CLI.
+# 每个 [[strategies]] 配置块代表一个交易标的上的一个策略实例。
+# 如需增加 ETHUSDT 等标的，继续追加新的 [[strategies]] 配置块即可。
+# 主 Runtime 会自动订阅这里声明的全部 symbol，不需要再通过命令行传 symbol。
 [[strategies]]
 
-# Binance contract symbol. Runtime normalizes it internally for stream handling.
+# Binance 合约交易对。
+# Runtime 内部会根据行情订阅要求进行 symbol 标准化处理。
 symbol = "BTCUSDT"
 
-# Built-in strategy type. Currently supported: "grid".
+# 策略类型。
+# 当前支持："grid"（网格做市策略）。
 kind = "grid"
 
-# Minimum valid price increment for this contract.
-# BTCUSDT example: 0.1 means generated order prices are aligned to 0.1 USDT.
-# This value must match the current Binance contract rule.
+# 最小价格变动单位（Tick Size）。
+# BTCUSDT 示例为 0.1，表示策略生成的订单价格必须按照 0.1 USDT 对齐。
+# 该值必须与 Binance 当前合约规则保持一致。
 tick_size = 0.1
 
-# Minimum quantity increment for this contract.
-# BTCUSDT example: 0.001 means order quantities are aligned to 0.001 BTC.
-# This value must match the current Binance contract rule.
+# 最小下单数量步长（Lot Size / Step Size）。
+# BTCUSDT 示例为 0.001，表示订单数量按照 0.001 BTC 对齐。
+# 该值必须与 Binance 当前合约规则保持一致。
 lot_size = 0.001
 
-# Half of the target bid/ask spread relative to the strategy reference price.
-# 0.0005 = 0.05% on each side before grid layering/skew adjustments.
-# Larger values quote farther from the market; smaller values quote more aggressively.
+# 相对于策略参考价格的单边目标价差比例。
+# 0.0005 = 0.05%，表示基础 Bid/Ask 报价分别位于参考价格两侧约 0.05%。
+# 数值越大，挂单距离市场越远，成交概率通常越低；数值越小，报价越激进。
 relative_half_spread = 0.0005
 
-# Relative spacing between adjacent grid levels.
-# 0.0005 = approximately 0.05% price spacing before tick-size rounding.
+# 相邻 Grid 档位之间的相对价格间隔。
+# 0.0005 = 约 0.05%，最终价格还会按照 tick_size 对齐。
 relative_grid_interval = 0.0005
 
-# Number of grid levels generated on each side of the book.
-# grid_num = 2 can generate up to 2 bids + 2 asks before risk/position filtering.
+# 买卖两侧分别生成的 Grid 档位数量。
+# grid_num = 2 时，在没有被仓位或风控过滤的情况下，最多生成 2 个 Bid + 2 个 Ask。
 grid_num = 2
 
-# Absolute lower bound for the distance between grid levels, in quote-price units.
-# The effective grid step will not be smaller than this value.
+# Grid 档位之间允许的最小绝对价格间隔，单位为报价资产价格。
+# 实际计算出的 Grid Step 不会小于该值。
+# BTCUSDT 配置 0.1 表示档位之间至少相差 0.1 USDT。
 min_grid_step = 0.1
 
-# Inventory-skew strength.
-# Non-zero skew moves quotes according to the current position so the strategy
-# becomes less willing to add to an existing inventory and more willing to reduce it.
-# Larger values create stronger inventory correction.
+# 库存偏移（Inventory Skew）强度。
+# 当当前持仓不为 0 时，策略会根据持仓方向调整报价，降低继续增加同方向仓位的意愿，
+# 同时提高降低已有库存的意愿。
+# 数值越大，库存修正力度越强；配置为 0 表示不根据库存调整报价。
 skew = 0.00025
 
-# Quantity of each grid order, in base-asset units.
-# BTCUSDT 0.001 means each generated grid order targets 0.001 BTC.
+# 每一个 Grid 订单的下单数量，单位为基础资产。
+# BTCUSDT 配置 0.001 表示每一档订单数量为 0.001 BTC。
 order_qty = 0.001
 
-# Strategy-level absolute position limit, in base-asset units.
-# GridStrategy stops generating orders that would increase inventory beyond this value.
-# Keep this <= risk.max_position so strategy intent and the final RiskGate agree.
+# 策略自身允许的最大绝对持仓，单位为基础资产。
+# GridStrategy 不会继续生成使持仓超过该值的加仓订单。
+# 建议该值 <= risk.max_position，保证策略限制与最终 RiskGate 限制一致。
 max_position = 0.003
