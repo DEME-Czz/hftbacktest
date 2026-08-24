@@ -37,6 +37,8 @@ pub enum ConfigError {
     InvalidOrderPrefix,
     #[error("invalid live safety configuration")]
     InvalidSafety,
+    #[error("execute mode requires a matched Binance endpoint environment")]
+    UntrustedExecutionEndpoint,
 }
 
 impl AppConfig {
@@ -86,9 +88,52 @@ impl AppConfig {
             {
                 return Err(ConfigError::InvalidPrivateStream);
             }
+            if !matched_execution_environment(
+                &self.exchange.api_url,
+                &self.exchange.public_stream_url,
+                &private_url,
+            ) {
+                return Err(ConfigError::UntrustedExecutionEndpoint);
+            }
         }
         Ok(())
     }
+}
+
+fn matched_execution_environment(api: &str, public_stream: &str, private_stream: &str) -> bool {
+    let (Ok(api), Ok(public_stream), Ok(private_stream)) = (
+        reqwest::Url::parse(api),
+        reqwest::Url::parse(public_stream),
+        reqwest::Url::parse(private_stream),
+    ) else {
+        return false;
+    };
+    if is_loopback(&api) && is_loopback(&public_stream) && is_loopback(&private_stream) {
+        return true;
+    }
+    let Some(api_host) = api.host_str() else {
+        return false;
+    };
+    let Some(public_host) = public_stream.host_str() else {
+        return false;
+    };
+    let Some(private_host) = private_stream.host_str() else {
+        return false;
+    };
+    matches!(
+        (api_host, public_host, private_host),
+        ("fapi.binance.com", "fstream.binance.com", "fstream.binance.com")
+            | (
+                "demo-fapi.binance.com",
+                "demo-fstream.binance.com",
+                "demo-fstream.binance.com"
+            )
+            | (
+                "testnet.binancefuture.com",
+                "stream.binancefuture.com",
+                "stream.binancefuture.com"
+            )
+    )
 }
 
 fn valid_transport(raw: &str, secure_scheme: &str, loopback_scheme: &str) -> bool {
