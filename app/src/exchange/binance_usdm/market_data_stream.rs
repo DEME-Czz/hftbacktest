@@ -387,7 +387,7 @@ mod tests {
     };
     use tokio_tungstenite::accept_async;
 
-    use super::MarketDataStream;
+    use super::{MAX_PENDING_DEPTH_MESSAGES, MarketDataStream};
     use crate::exchange::binance_usdm::{SharedSymbolSet, rest::BinanceFuturesClient};
 
     #[test]
@@ -513,5 +513,46 @@ mod tests {
             "ethusdt@trade".to_string(),
         ];
         assert_eq!(server.await.unwrap(), vec![expected.clone(), expected]);
+    }
+
+    #[tokio::test]
+    async fn pending_depth_buffer_is_bounded_when_snapshot_never_arrives() {
+        use crate::exchange::binance_usdm::protocol::stream;
+
+        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "");
+        let (event_tx, _event_rx) = unbounded_channel();
+        let (symbol_tx, _) = broadcast::channel(4);
+        let symbols: SharedSymbolSet = Default::default();
+        let mut market = MarketDataStream::new(client, event_tx, symbols, symbol_tx.subscribe());
+
+        for update_id in 1..=MAX_PENDING_DEPTH_MESSAGES as i64 {
+            market
+                .handle_depth_update(stream::Depth {
+                    transaction_time: update_id,
+                    event_time: update_id,
+                    symbol: "btcusdt".to_string(),
+                    first_update_id: update_id,
+                    last_update_id: update_id,
+                    prev_update_id: update_id - 1,
+                    bids: Vec::new(),
+                    asks: Vec::new(),
+                })
+                .unwrap();
+        }
+        let overflow = market.handle_depth_update(stream::Depth {
+            transaction_time: 1,
+            event_time: 1,
+            symbol: "btcusdt".to_string(),
+            first_update_id: 1,
+            last_update_id: 1,
+            prev_update_id: 0,
+            bids: Vec::new(),
+            asks: Vec::new(),
+        });
+
+        assert!(matches!(
+            overflow,
+            Err(crate::exchange::binance_usdm::BinanceFuturesError::DepthBufferOverflow)
+        ));
     }
 }
