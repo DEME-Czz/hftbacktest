@@ -26,18 +26,63 @@ pub type StrategyRuntimes = HashMap<String, LiveStrategyRuntime<BuiltinStrategy>
 struct AccountReadiness {
     symbols: HashSet<String>,
     halted: HashSet<String>,
+    position_timestamps: HashMap<String, i64>,
+    pending_position_after_fill: HashMap<String, i64>,
 }
 
 impl AccountReadiness {
     fn reconcile(&mut self, symbol: &str) -> bool {
-        if self.halted.contains(symbol) {
+        if self.halted.contains(symbol)
+            || !self.position_timestamps.contains_key(symbol)
+            || self.pending_position_after_fill.contains_key(symbol)
+        {
             return false;
         }
         self.symbols.insert(symbol.to_string())
     }
 
+    fn observe_position(&mut self, symbol: &str, exch_ts: i64, applied: bool) {
+        if !applied {
+            return;
+        }
+        self.position_timestamps
+            .entry(symbol.to_string())
+            .and_modify(|current| *current = (*current).max(exch_ts))
+            .or_insert(exch_ts);
+        let position_is_current = self
+            .pending_position_after_fill
+            .get(symbol)
+            .is_some_and(|required| exch_ts >= *required);
+        if position_is_current {
+            self.pending_position_after_fill.remove(symbol);
+            if !self.halted.contains(symbol) {
+                self.symbols.insert(symbol.to_string());
+            }
+        }
+    }
+
+    fn observe_order(&mut self, symbol: &str, order: &hftbacktest::types::Order) {
+        if !order.exec_qty.is_finite() || order.exec_qty <= 0.0 {
+            return;
+        }
+        let position_is_current = self
+            .position_timestamps
+            .get(symbol)
+            .is_some_and(|position_ts| *position_ts >= order.exch_timestamp);
+        if position_is_current {
+            return;
+        }
+        self.symbols.remove(symbol);
+        self.pending_position_after_fill
+            .entry(symbol.to_string())
+            .and_modify(|required| *required = (*required).max(order.exch_timestamp))
+            .or_insert(order.exch_timestamp);
+    }
+
     fn disconnect(&mut self) {
         self.symbols.clear();
+        self.position_timestamps.clear();
+        self.pending_position_after_fill.clear();
     }
 
     fn contains(&self, symbol: &str) -> bool {
@@ -169,7 +214,16 @@ impl<C: LiveConnector> LiveService<C> {
                         if let Some(symbol) = live_symbol(&live)
                             && let Some(runtime) = self.runtimes.get_mut(symbol)
                         {
-                            runtime.apply(&live);
+                            let applied = runtime.apply(&live);
+                            match &live {
+                                LiveEvent::Position { exch_ts, .. } => {
+                                    account_readiness.observe_position(symbol, *exch_ts, applied);
+                                }
+                                LiveEvent::Order { order, .. } if applied => {
+                                    account_readiness.observe_order(symbol, order);
+                                }
+                                _ => {}
+                            }
                         }
                         if let LiveEvent::Error(error) = &live {
                             warn!(?error, "Binance live runtime error");
@@ -587,6 +641,8 @@ mod tests {
     #[test]
     fn account_disconnect_invalidates_every_reconciled_symbol() {
         let mut readiness = AccountReadiness::default();
+        readiness.observe_position("btcusdt", 1, true);
+        readiness.observe_position("ethusdt", 1, true);
         readiness.reconcile("btcusdt");
         readiness.reconcile("ethusdt");
         assert!(readiness.contains("btcusdt"));
@@ -596,6 +652,7 @@ mod tests {
         assert!(!readiness.contains("btcusdt"));
         assert!(!readiness.contains("ethusdt"));
 
+        readiness.observe_position("btcusdt", 2, true);
         readiness.reconcile("btcusdt");
         assert!(readiness.contains("btcusdt"));
         assert!(!readiness.contains("ethusdt"));
