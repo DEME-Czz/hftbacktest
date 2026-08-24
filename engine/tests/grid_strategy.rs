@@ -72,3 +72,14 @@ fn grid_config_rejects_invalid_order_quantity() {
     invalid.order_qty = 0.0;
     assert!(GridStrategy::new(invalid).is_err());
 }
+
+#[test]
+fn grid_config_rejects_non_finite_parameters() {
+    let mut invalid = config();
+    invalid.relative_grid_interval = f64::NAN;
+    assert!(GridStrategy::new(invalid).is_err());
+
+    let mut invalid = config();
+    invalid.skew = f64::INFINITY;
+    assert!(GridStrategy::new(invalid).is_err());
+}

@@ -5,11 +5,9 @@ use hftbacktest::{
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
 
-use crate::{
-    connector::{Connector, PublishEvent},
-    risk::RiskGate,
-    runtime::LiveStrategyRuntime,
-};
+use crate::ports::{ExecutionVenue, PublishEvent};
+
+use super::{risk::RiskGate, runtime::LiveStrategyRuntime};
 
 pub struct LiveExecutor {
     execute: bool,
@@ -19,7 +17,7 @@ pub struct LiveExecutor {
 impl LiveExecutor {
     pub fn new(execute: bool, risk: RiskGate) -> Self { Self { execute, risk } }
 
-    pub fn execute<C: Connector>(
+    pub fn execute<C: ExecutionVenue>(
         &self,
         connector: &C,
         tx: &UnboundedSender<PublishEvent>,
@@ -97,16 +95,12 @@ mod tests {
 
     use super::LiveExecutor;
     use crate::{
-        connector::{Connector, GetOrders, PublishEvent, RunMode},
-        risk::{RiskConfig, RiskGate},
-        runtime::LiveStrategyRuntime,
+        live::{
+            risk::{RiskConfig, RiskGate},
+            runtime::LiveStrategyRuntime,
+        },
+        ports::{ExecutionVenue, PublishEvent},
     };
-
-    #[derive(Default)]
-    struct EmptyOrders;
-    impl GetOrders for EmptyOrders {
-        fn orders(&self, _symbol: Option<String>) -> Vec<Order> { Vec::new() }
-    }
 
     #[derive(Clone, Default)]
     struct FakeConnector {
@@ -114,12 +108,9 @@ mod tests {
         canceled: Arc<Mutex<Vec<(String, Order)>>>,
     }
 
-    impl Connector for FakeConnector {
-        fn register(&mut self, _symbol: String) {}
-        fn order_manager(&self) -> Arc<Mutex<dyn GetOrders + Send + 'static>> {
-            Arc::new(Mutex::new(EmptyOrders))
-        }
-        fn run(&mut self, _mode: RunMode, _tx: UnboundedSender<PublishEvent>) {}
+    impl ExecutionVenue for FakeConnector {
+        fn start_account_stream(&self, _tx: UnboundedSender<PublishEvent>) {}
+        fn open_orders(&self, _symbol: &str) -> Vec<Order> { Vec::new() }
         fn submit(&self, symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
             self.submitted.lock().unwrap().push((symbol, order));
         }

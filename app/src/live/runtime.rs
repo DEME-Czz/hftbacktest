@@ -1,75 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use hftbacktest::{
     depth::{HashMapMarketDepth, L2MarketDepth, MarketDepth},
-    strategy::{
-        BuiltinStrategy, BuiltinStrategyConfig, GridConfig, MarketContext, Strategy,
-        StrategyCommand,
-    },
+    strategy::{MarketContext, Strategy, StrategyCommand},
     types::{
         BUY_EVENT, DEPTH_CLEAR_EVENT, DEPTH_EVENT, Event, LiveEvent, OrdType, Order, OrderId,
         SELL_EVENT, Side, Status, TRADE_EVENT, TimeInForce,
     },
 };
-use serde::Deserialize;
 
-use crate::risk::RiskConfig;
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct RuntimeConfig {
-    #[serde(default)]
-    pub strategies: Vec<LiveStrategyConfig>,
-    #[serde(default)]
-    pub risk: RiskConfig,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct LiveStrategyConfig {
-    pub symbol: String,
-    pub tick_size: f64,
-    pub lot_size: f64,
-    #[serde(flatten)]
-    pub strategy: StrategyConfig,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum StrategyConfig {
-    Grid {
-        relative_half_spread: f64,
-        relative_grid_interval: f64,
-        grid_num: usize,
-        min_grid_step: f64,
-        skew: f64,
-        order_qty: f64,
-        max_position: f64,
-    },
-}
-
-impl LiveStrategyConfig {
-    pub fn build_strategy(&self) -> Result<BuiltinStrategy, &'static str> {
-        let config = match &self.strategy {
-            StrategyConfig::Grid {
-                relative_half_spread,
-                relative_grid_interval,
-                grid_num,
-                min_grid_step,
-                skew,
-                order_qty,
-                max_position,
-            } => BuiltinStrategyConfig::Grid(GridConfig {
-                relative_half_spread: *relative_half_spread,
-                relative_grid_interval: *relative_grid_interval,
-                grid_num: *grid_num,
-                min_grid_step: *min_grid_step,
-                skew: *skew,
-                order_qty: *order_qty,
-                max_position: *max_position,
-            }),
-        };
-        BuiltinStrategy::from_config(config)
-    }
-}
+pub use super::config::{LiveStrategyConfig, RuntimeConfig, StrategyConfig};
 
 /// In-process normalized market/account state used by live strategies.
 pub struct LiveStrategyRuntime<S> {
@@ -77,7 +17,7 @@ pub struct LiveStrategyRuntime<S> {
     depth: HashMapMarketDepth,
     position: f64,
     orders: HashMap<OrderId, Order>,
-    last_trades: Vec<Event>,
+    last_trades: VecDeque<Event>,
     strategy: S,
     timestamp: i64,
     depth_dirty: bool,
@@ -93,7 +33,7 @@ where
             depth: HashMapMarketDepth::new(tick_size, lot_size),
             position: 0.0,
             orders: HashMap::new(),
-            last_trades: Vec::with_capacity(1024),
+            last_trades: VecDeque::with_capacity(1024),
             strategy,
             timestamp: 0,
             depth_dirty: false,
@@ -119,10 +59,10 @@ where
                     self.depth_dirty = true;
                     false
                 } else if event.is(TRADE_EVENT) {
-                    self.last_trades.push(event.clone());
-                    if self.last_trades.len() > 1024 {
-                        self.last_trades.remove(0);
+                    if self.last_trades.len() == 1024 {
+                        self.last_trades.pop_front();
                     }
+                    self.last_trades.push_back(event.clone());
                     true
                 } else {
                     false
@@ -151,12 +91,13 @@ where
     }
 
     pub fn decide(&mut self) -> Vec<StrategyCommand> {
+        let last_trades = self.last_trades.make_contiguous();
         let context = MarketContext {
             timestamp: self.timestamp,
             depth: &self.depth,
             position: self.position,
             orders: &self.orders,
-            last_trades: &self.last_trades,
+            last_trades,
         };
         self.strategy.on_event(&context)
     }

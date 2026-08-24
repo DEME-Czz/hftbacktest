@@ -1,13 +1,15 @@
 use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use serde::Deserialize;
 
-use super::{from_str_to_side, from_str_to_status, from_str_to_tif, from_str_to_type};
-use crate::utils::{from_str_to_f64, from_str_to_f64_opt, to_lowercase};
+use super::{
+    from_str_to_f64, from_str_to_f64_opt, from_str_to_side, from_str_to_status,
+    from_str_to_tif, from_str_to_type, to_lowercase,
+};
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 pub enum OrderResponseResult {
-    Ok(OrderResponse),
+    Ok(Box<OrderResponse>),
     Err(ErrorResponse),
 }
 

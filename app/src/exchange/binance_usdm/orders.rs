@@ -1,17 +1,15 @@
 use std::sync::{Arc, Mutex};
 
-use chrono::Utc;
 use hashbrown::HashMap;
 use hftbacktest::types::{Order, OrderId, Status};
 use tracing::error;
 
 use crate::{
-    binancefutures::{
-        BinanceFuturesError,
-        msg::{rest::OrderResponse, stream::OrderTradeUpdate},
+    exchange::binance_usdm::{
+        BinanceFuturesError, now_ns,
+        id::{RefSymbolOrderId, SymbolOrderId, generate_random_id},
+        protocol::{rest::OrderResponse, stream::OrderTradeUpdate},
     },
-    connector::GetOrders,
-    utils::{RefSymbolOrderId, SymbolOrderId, generate_rand_string},
 };
 
 #[derive(Debug)]
@@ -22,7 +20,7 @@ struct OrderExt {
     removed_by_rest: bool,
 }
 
-pub type SharedOrderManager = Arc<Mutex<OrderManager>>;
+pub(crate) type SharedOrderManager = Arc<Mutex<OrderManager>>;
 
 pub type ClientOrderId = String;
 
@@ -101,7 +99,7 @@ impl OrderManager {
             }
 
             if order_ext.removed_by_ws && order_ext.removed_by_rest {
-                self.orders.remove(&resp.order.client_order_id).unwrap();
+                self.orders.remove(&resp.order.client_order_id);
             }
         }
 
@@ -189,7 +187,7 @@ impl OrderManager {
             }
 
             if order_ext.removed_by_ws && order_ext.removed_by_rest {
-                self.orders.remove(client_order_id).unwrap();
+                self.orders.remove(client_order_id);
             }
         }
 
@@ -237,7 +235,7 @@ impl OrderManager {
             }
 
             if order_ext.removed_by_ws && order_ext.removed_by_rest {
-                self.orders.remove(client_order_id).unwrap();
+                self.orders.remove(client_order_id);
             }
         }
 
@@ -250,7 +248,7 @@ impl OrderManager {
             return None;
         }
 
-        let client_order_id = format!("{}{}", self.prefix, generate_rand_string(16));
+        let client_order_id = format!("{}{}", self.prefix, generate_random_id(16));
         if self.orders.contains_key(&client_order_id) {
             return None;
         }
@@ -280,7 +278,7 @@ impl OrderManager {
     /// The gc method resolves this by removing orders that were deleted by one channel but not
     /// confirmed by the other, after a defined threshold period.
     pub fn gc(&mut self) {
-        let now = Utc::now().timestamp_nanos_opt().unwrap();
+        let now = now_ns();
         let stale_ts = now - 300_000_000_000;
         let stale_ids: Vec<(_, _)> = self
             .orders
@@ -301,54 +299,18 @@ impl OrderManager {
         for (client_order_id, order_id) in stale_ids.iter() {
             if self.order_id_map.contains_key(order_id) {
                 // todo: something went wrong?
-                self.order_id_map.remove(order_id).unwrap();
+                self.order_id_map.remove(order_id);
             }
             self.orders.remove(client_order_id);
         }
     }
 
-    pub fn cancel_all_from_rest(&mut self, symbol: &str) -> Vec<Order> {
-        let mut removed_orders = Vec::new();
-        let mut removed_order_ids = Vec::new();
-        for (client_order_id, order_ext) in &mut self.orders {
-            if order_ext.symbol != symbol {
-                continue;
-            }
-            let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-
-            order_ext.removed_by_rest = true;
-            order_ext.order.status = Status::Canceled;
-            // todo: check if the exchange timestamp exists in the REST response.
-            order_ext.order.exch_timestamp = Utc::now().timestamp_nanos_opt().unwrap();
-            if !already_removed {
-                self.order_id_map
-                    .remove(&RefSymbolOrderId::new(symbol, order_ext.order.order_id));
-                removed_orders.push(order_ext.order.clone());
-            }
-
-            // Completely deletes the order if it is removed by both the REST response and the
-            // WebSocket stream.
-            if order_ext.removed_by_ws && order_ext.removed_by_rest {
-                removed_order_ids.push(client_order_id.clone());
-            }
-        }
-
-        for order_id in removed_order_ids {
-            self.orders.remove(&order_id).unwrap();
-        }
-        removed_orders
-    }
-}
-
-impl GetOrders for OrderManager {
-    fn orders(&self, symbol: Option<String>) -> Vec<Order> {
+    pub fn active_orders(&self, symbol: &str) -> Vec<Order> {
         self.orders
-            .iter()
-            .filter(|(_, order)| {
-                symbol.as_ref().map(|s| order.symbol == *s).unwrap_or(true) && order.order.active()
-            })
-            .map(|(_, order)| &order.order)
-            .cloned()
+            .values()
+            .filter(|order| order.symbol == symbol && order.order.active())
+            .map(|order| order.order.clone())
             .collect()
     }
+
 }

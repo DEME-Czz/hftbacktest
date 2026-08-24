@@ -17,15 +17,15 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, warn};
 
 use crate::{
-    binancefutures::{
-        BinanceFuturesError,
+    exchange::binance_usdm::{
+        BinanceFuturesError, lock_recover,
         SharedSymbolSet,
-        msg::stream::{EventStream, Stream},
-        ordermanager::SharedOrderManager,
+        orders::SharedOrderManager,
+        protocol::stream::{EventStream, Stream},
         rest::BinanceFuturesClient,
+        transport::connect_websocket,
     },
-    connector::PublishEvent,
-    utils::connect_websocket,
+    ports::PublishEvent,
 };
 
 pub struct UserDataStream {
@@ -53,7 +53,9 @@ impl UserDataStream {
 
     fn process_message(&self, stream: EventStream) -> Result<(), BinanceFuturesError> {
         match stream {
-            EventStream::DepthUpdate(_) | EventStream::Trade(_) => unreachable!(),
+            EventStream::DepthUpdate(_) | EventStream::Trade(_) => {
+                warn!("ignoring public event received on private user stream");
+            }
             EventStream::ListenKeyExpired(_) => return Err(BinanceFuturesError::ListenKeyExpired),
             EventStream::AccountUpdate(data) => {
                 for position in data.account.position {
@@ -65,7 +67,7 @@ impl UserDataStream {
                 }
             }
             EventStream::OrderTradeUpdate(data) => {
-                match self.order_manager.lock().unwrap().update_from_ws(&data) {
+                match lock_recover(&self.order_manager).update_from_ws(&data) {
                     Ok(Some(order)) => {
                         let _ = self.ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
                             symbol: data.order.symbol,
@@ -88,7 +90,7 @@ impl UserDataStream {
         let mut interval = time::interval(Duration::from_secs(60 * 30));
         let mut ping_checker = time::interval(Duration::from_secs(10));
 
-        let symbols: HashSet<_> = self.symbols.lock().unwrap().iter().cloned().collect();
+        let symbols: HashSet<_> = lock_recover(&self.symbols).iter().cloned().collect();
         let client = self.client.clone();
         let ev_tx = self.ev_tx.clone();
         let mut last_ping = Instant::now();
@@ -102,7 +104,7 @@ impl UserDataStream {
         loop {
             select! {
                 _ = interval.tick() => {
-                    self.order_manager.lock().unwrap().gc();
+                    lock_recover(&self.order_manager).gc();
                     let client_ = self.client.clone();
                     tokio::spawn(async move {
                         if let Err(error) = client_.keepalive_user_data_stream().await {

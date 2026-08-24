@@ -3,7 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use hftbacktest::prelude::*;
 use tokio::{
@@ -18,21 +17,21 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, warn};
 
 use crate::{
-    binancefutures::{
-        BinanceFuturesError,
+    exchange::binance_usdm::{
+        BinanceFuturesError, lock_recover, now_ns,
         SharedSymbolSet,
-        msg::{
+        id::generate_random_id,
+        protocol::{
+            parse_depth, parse_px_qty,
             rest,
             stream,
             stream::{EventStream, Stream},
         },
         rest::BinanceFuturesClient,
+        transport::connect_websocket,
     },
-    connector::PublishEvent,
-    utils::{connect_websocket, generate_rand_string, parse_depth, parse_px_qty_tup},
+    ports::PublishEvent,
 };
-
-const BROADCAST_TARGET: u64 = 0;
 
 pub struct MarketDataStream {
     client: BinanceFuturesClient,
@@ -106,7 +105,7 @@ impl MarketDataStream {
             return Ok(());
         };
 
-        self.publish(PublishEvent::BatchStart(BROADCAST_TARGET))?;
+        self.publish(PublishEvent::BatchStart)?;
 
         for (px, qty) in bids {
             self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
@@ -114,7 +113,7 @@ impl MarketDataStream {
                     event: Event {
                         ev: LOCAL_BID_DEPTH_EVENT,
                         exch_ts: transaction_time * 1_000_000,
-                        local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
+                        local_ts: now_ns(),
                         order_id: 0,
                         px,
                         qty,
@@ -130,7 +129,7 @@ impl MarketDataStream {
                     event: Event {
                         ev: LOCAL_ASK_DEPTH_EVENT,
                         exch_ts: transaction_time * 1_000_000,
-                        local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
+                        local_ts: now_ns(),
                         order_id: 0,
                         px,
                         qty,
@@ -140,7 +139,7 @@ impl MarketDataStream {
                 }))?;
         }
 
-        self.publish(PublishEvent::BatchEnd(BROADCAST_TARGET))
+        self.publish(PublishEvent::BatchEnd)
     }
 
     fn emit_depth_update(&self, data: &stream::Depth) -> Result<(), BinanceFuturesError> {
@@ -191,28 +190,6 @@ impl MarketDataStream {
         symbol: String,
         data: rest::Depth,
     ) -> Result<(), BinanceFuturesError> {
-        // Clear the local book before applying a fresh REST snapshot.
-        self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
-                symbol: symbol.clone(),
-                event: Event {
-                    ev: LOCAL_DEPTH_CLEAR_EVENT,
-                    exch_ts: data.transaction_time * 1_000_000,
-                    local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
-                    order_id: 0,
-                    px: 0.0,
-                    qty: 0.0,
-                    ival: 0,
-                    fval: 0.0,
-                },
-            }))?;
-
-        self.emit_depth_levels(
-            &symbol,
-            data.transaction_time,
-            data.bids,
-            data.asks,
-        )?;
-
         let mut pending = self
             .pending_depth_messages
             .remove(&symbol)
@@ -223,25 +200,58 @@ impl MarketDataStream {
             event.first_update_id <= data.last_update_id
                 && event.last_update_id >= data.last_update_id
         }) else {
-            // No buffered event bridges the snapshot yet; wait for a new update and fetch again.
+            // A snapshot is not tradable until a buffered diff bridges its update id. Preserve
+            // the buffer and retry only when at least one diff exists; otherwise the next diff
+            // will trigger a new snapshot request.
             self.prev_u.remove(&symbol);
+            let should_retry = !pending.is_empty();
+            self.pending_depth_messages.insert(symbol.clone(), pending);
+            if should_retry {
+                self.request_snapshot(symbol);
+            }
             return Ok(());
         };
 
+        if let Some(gap) = pending[first_index..]
+            .windows(2)
+            .find(|pair| pair[1].prev_update_id != pair[0].last_update_id)
+        {
+            warn!(
+                %symbol,
+                prev = gap[0].last_update_id,
+                pu = gap[1].prev_update_id,
+                "gap in buffered depth updates"
+            );
+            self.prev_u.remove(&symbol);
+            self.pending_depth_messages.insert(symbol.clone(), pending);
+            self.request_snapshot(symbol);
+            return Ok(());
+        }
+
+        // Publish atomically only after continuity has been established. This prevents strategy
+        // decisions from observing a REST snapshot that cannot be connected to the live stream.
+        self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
+            symbol: symbol.clone(),
+            event: Event {
+                ev: LOCAL_DEPTH_CLEAR_EVENT,
+                exch_ts: data.transaction_time * 1_000_000,
+                local_ts: now_ns(),
+                order_id: 0,
+                px: 0.0,
+                qty: 0.0,
+                ival: 0,
+                fval: 0.0,
+            },
+        }))?;
+        self.emit_depth_levels(
+            &symbol,
+            data.transaction_time,
+            data.bids,
+            data.asks,
+        )?;
+
         let mut previous_u = None;
         for event in pending.into_iter().skip(first_index) {
-            if let Some(prev) = previous_u
-                && event.prev_update_id != prev
-            {
-                warn!(%symbol, prev, pu = event.prev_update_id, "gap in buffered depth updates");
-                self.prev_u.remove(&symbol);
-                self.pending_depth_messages
-                    .entry(symbol.clone())
-                    .or_default()
-                    .push(event);
-                self.request_snapshot(symbol.clone());
-                return Ok(());
-            }
             self.emit_depth_update(&event)?;
             previous_u = Some(event.last_update_id);
         }
@@ -259,7 +269,7 @@ impl MarketDataStream {
                 if data.type_ != "MARKET" {
                     return Ok(());
                 }
-                match parse_px_qty_tup(data.price, data.qty) {
+                match parse_px_qty(data.price, data.qty) {
                     Ok((px, qty)) => {
                         self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
                                 symbol: data.symbol,
@@ -270,7 +280,7 @@ impl MarketDataStream {
                                         LOCAL_BUY_TRADE_EVENT
                                     },
                                     exch_ts: data.transaction_time * 1_000_000,
-                                    local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
+                                    local_ts: now_ns(),
                                     order_id: 0,
                                     px,
                                     qty,
@@ -282,7 +292,7 @@ impl MarketDataStream {
                     Err(error) => error!(?error, "failed to parse Binance trade stream"),
                 }
             }
-            _ => unreachable!(),
+            other => warn!(?other, "ignoring private event received on public market stream"),
         }
         Ok(())
     }
@@ -295,16 +305,13 @@ impl MarketDataStream {
         let mut last_ping = Instant::now();
         let mut subscribed = HashSet::new();
 
-        let registered_symbols: Vec<_> = self
-            .symbols
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        let registered_symbols: Vec<_> = lock_recover(&self.symbols)
             .iter()
             .cloned()
             .collect();
         for symbol in registered_symbols {
             if subscribed.insert(symbol.clone()) {
-                let id = generate_rand_string(16);
+                let id = generate_random_id(16);
                 write.send(Message::Text(subscription_request(&symbol, &id).into())).await?;
             }
         }
@@ -322,7 +329,7 @@ impl MarketDataStream {
                 msg = self.symbol_rx.recv() => match msg {
                     Ok(symbol) => {
                         if subscribed.insert(symbol.clone()) {
-                            let id = generate_rand_string(16);
+                            let id = generate_random_id(16);
                             write.send(Message::Text(subscription_request(&symbol, &id).into())).await?;
                         }
                     }
@@ -383,7 +390,7 @@ mod tests {
     use tokio_tungstenite::accept_async;
 
     use super::MarketDataStream;
-    use crate::binancefutures::{SharedSymbolSet, rest::BinanceFuturesClient};
+    use crate::exchange::binance_usdm::{SharedSymbolSet, rest::BinanceFuturesClient};
 
     #[test]
     fn closed_event_sink_does_not_panic() {
@@ -395,15 +402,59 @@ mod tests {
         let stream = MarketDataStream::new(client, event_tx, symbols, symbol_tx.subscribe());
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let _ = stream.emit_depth_levels(
+            stream.emit_depth_levels(
                 "btcusdt",
                 1,
                 vec![("100.0".to_string(), "1.0".to_string())],
                 vec![("101.0".to_string(), "1.0".to_string())],
-            );
+            )
         }));
 
         assert!(result.is_ok(), "a closed event sink must not panic the stream task");
+        assert!(matches!(
+            result.unwrap(),
+            Err(crate::exchange::binance_usdm::BinanceFuturesError::PublishSinkClosed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn snapshot_is_not_published_until_a_buffered_update_bridges_it() {
+        use crate::exchange::binance_usdm::protocol::{rest, stream};
+
+        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "");
+        let (event_tx, mut event_rx) = unbounded_channel();
+        let (symbol_tx, _) = broadcast::channel(4);
+        let symbols: SharedSymbolSet = Default::default();
+        let mut market =
+            MarketDataStream::new(client, event_tx, symbols, symbol_tx.subscribe());
+        market.pending_depth_messages.insert(
+            "btcusdt".to_string(),
+            vec![stream::Depth {
+                transaction_time: 2,
+                event_time: 2,
+                symbol: "btcusdt".to_string(),
+                first_update_id: 200,
+                last_update_id: 210,
+                prev_update_id: 199,
+                bids: vec![("100.0".to_string(), "1.0".to_string())],
+                asks: vec![("101.0".to_string(), "1.0".to_string())],
+            }],
+        );
+
+        market
+            .process_snapshot(
+                "btcusdt".to_string(),
+                rest::Depth {
+                    last_update_id: 100,
+                    event_time: 1,
+                    transaction_time: 1,
+                    bids: vec![("99.0".to_string(), "1.0".to_string())],
+                    asks: vec![("102.0".to_string(), "1.0".to_string())],
+                },
+            )
+            .unwrap();
+
+        assert!(event_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -415,13 +466,25 @@ mod tests {
             for _ in 0..2 {
                 let (socket, _) = listener.accept().await.unwrap();
                 let mut websocket = accept_async(socket).await.unwrap();
-                let subscribed = timeout(Duration::from_millis(500), websocket.next())
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(Result::ok)
-                    .is_some();
-                subscriptions.push(subscribed);
+                let mut params = Vec::new();
+                while params.len() < 4 {
+                    let message = timeout(Duration::from_millis(500), websocket.next())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap();
+                    let text = message.into_text().unwrap();
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    params.extend(
+                        value["params"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|value| value.as_str().unwrap().to_string()),
+                    );
+                }
+                params.sort();
+                subscriptions.push(params);
                 websocket.close(None).await.unwrap();
             }
             subscriptions
@@ -431,10 +494,11 @@ mod tests {
         let (event_tx, _event_rx) = unbounded_channel();
         let (symbol_tx, _) = broadcast::channel(4);
         let symbols: SharedSymbolSet = Default::default();
-        symbols
-            .lock()
-            .unwrap()
-            .insert("btcusdt".to_string());
+        {
+            let mut symbols = symbols.lock().unwrap();
+            symbols.insert("btcusdt".to_string());
+            symbols.insert("ethusdt".to_string());
+        }
         let mut stream = MarketDataStream::new(
             client,
             event_tx,
@@ -447,6 +511,12 @@ mod tests {
         assert!(stream.connect(&url).await.is_err());
         assert!(stream.connect(&url).await.is_err());
 
-        assert_eq!(server.await.unwrap(), vec![true, true]);
+        let expected = vec![
+            "btcusdt@depth@100ms".to_string(),
+            "btcusdt@trade".to_string(),
+            "ethusdt@depth@100ms".to_string(),
+            "ethusdt@trade".to_string(),
+        ];
+        assert_eq!(server.await.unwrap(), vec![expected.clone(), expected]);
     }
 }

@@ -29,6 +29,22 @@ impl Default for RiskConfig {
     }
 }
 
+impl RiskConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.max_order_qty.is_finite()
+            || self.max_order_qty <= 0.0
+            || !self.max_order_notional.is_finite()
+            || self.max_order_notional <= 0.0
+            || !self.max_position.is_finite()
+            || self.max_position <= 0.0
+            || self.max_open_orders == 0
+        {
+            return Err("risk limits must be finite and positive");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RiskGate {
     config: RiskConfig,

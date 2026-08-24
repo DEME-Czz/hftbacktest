@@ -19,22 +19,25 @@ pub struct GridConfig {
 
 impl GridConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.relative_half_spread < 0.0 {
+        if !self.relative_half_spread.is_finite() || self.relative_half_spread < 0.0 {
             return Err("relative_half_spread must be non-negative");
         }
-        if self.relative_grid_interval <= 0.0 {
+        if !self.relative_grid_interval.is_finite() || self.relative_grid_interval <= 0.0 {
             return Err("relative_grid_interval must be positive");
         }
         if self.grid_num == 0 {
             return Err("grid_num must be greater than zero");
         }
-        if self.min_grid_step <= 0.0 {
+        if !self.min_grid_step.is_finite() || self.min_grid_step <= 0.0 {
             return Err("min_grid_step must be positive");
         }
-        if self.order_qty <= 0.0 {
+        if !self.skew.is_finite() {
+            return Err("skew must be finite");
+        }
+        if !self.order_qty.is_finite() || self.order_qty <= 0.0 {
             return Err("order_qty must be positive");
         }
-        if self.max_position <= 0.0 {
+        if !self.max_position.is_finite() || self.max_position <= 0.0 {
             return Err("max_position must be positive");
         }
         Ok(())

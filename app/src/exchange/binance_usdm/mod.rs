@@ -1,14 +1,17 @@
+mod id;
 mod market_data_stream;
-mod msg;
-mod ordermanager;
+mod orders;
+mod protocol;
 mod rest;
+mod transport;
 mod user_data_stream;
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
+use chrono::Utc;
 use hftbacktest::{
     prelude::get_precision,
     types::{ErrorKind, LiveError, LiveEvent, Order, Status, Value},
@@ -20,13 +23,24 @@ use tokio_tungstenite::tungstenite;
 use tracing::{debug, error, warn};
 
 use crate::{
-    binancefutures::{
-        ordermanager::{OrderManager, SharedOrderManager},
+    exchange::binance_usdm::{
+        orders::{OrderManager, SharedOrderManager},
         rest::BinanceFuturesClient,
     },
-    connector::{Connector, ConnectorBuilder, GetOrders, PublishEvent, RunMode},
-    utils::{BackoffStrategy, ExponentialBackoff, Retry},
+    ports::{ExecutionVenue, MarketDataSource, PublishEvent},
 };
+
+use self::transport::{BackoffStrategy, ExponentialBackoff, Retry};
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn now_ns() -> i64 {
+    Utc::now().timestamp_micros().saturating_mul(1_000)
+}
 
 #[derive(Error, Debug)]
 pub enum BinanceFuturesError {
@@ -52,8 +66,6 @@ pub enum BinanceFuturesError {
     OrderNotFound,
     #[error("Tungstenite: {0:?}")]
     Tungstenite(#[from] tungstenite::Error),
-    #[error("Config: {0:?}")]
-    Config(#[from] toml::de::Error),
 }
 
 impl From<BinanceFuturesError> for Value {
@@ -78,9 +90,10 @@ impl From<BinanceFuturesError> for Value {
     }
 }
 
-#[derive(Deserialize)]
-pub struct Config {
+#[derive(Clone, Deserialize)]
+pub struct BinanceConfig {
     pub public_stream_url: String,
+    #[serde(default)]
     pub private_stream_url: String,
     pub api_url: String,
     #[serde(default)]
@@ -91,10 +104,23 @@ pub struct Config {
     pub secret: String,
 }
 
+impl std::fmt::Debug for BinanceConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BinanceConfig")
+            .field("public_stream_url", &self.public_stream_url)
+            .field("private_stream_url", &self.private_stream_url)
+            .field("api_url", &self.api_url)
+            .field("order_prefix", &self.order_prefix)
+            .field("credentials_configured", &(!self.api_key.is_empty() && !self.secret.is_empty()))
+            .finish()
+    }
+}
+
 type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
 
 pub struct BinanceFutures {
-    config: Config,
+    config: BinanceConfig,
     symbols: SharedSymbolSet,
     order_manager: SharedOrderManager,
     client: BinanceFuturesClient,
@@ -102,6 +128,20 @@ pub struct BinanceFutures {
 }
 
 impl BinanceFutures {
+    pub fn new(config: BinanceConfig) -> Self {
+        let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
+        let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret);
+        let (symbol_tx, _) = broadcast::channel(500);
+
+        Self {
+            config,
+            symbols: Default::default(),
+            order_manager,
+            client,
+            symbol_tx,
+        }
+    }
+
     pub fn connect_market_data_stream(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
         let base_url = self.config.public_stream_url.clone();
         let client = self.client.clone();
@@ -150,6 +190,9 @@ impl BinanceFutures {
             let _ = Retry::new(ExponentialBackoff::default())
                 .error_handler(|error: BinanceFuturesError| {
                     error!(?error, "user data stream connection interrupted");
+                    if ev_tx.send(PublishEvent::AccountStreamDisconnected).is_err() {
+                        return Err(error);
+                    }
                     let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
                         ErrorKind::ConnectionInterrupted,
                         error.into(),
@@ -174,62 +217,36 @@ impl BinanceFutures {
         });
     }
 
-    /// Starts only public market data. Collector must use this path so API credentials,
-    /// when present in the config, never cause a private user-data connection.
-    pub fn run_market_data_only(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
+}
+
+impl MarketDataSource for BinanceFutures {
+    fn register(&mut self, symbol: String) {
+        let symbol = symbol.to_lowercase();
+        let mut symbols = lock_recover(&self.symbols);
+        if symbols.insert(symbol.clone()) {
+            let _ = self.symbol_tx.send(symbol);
+        }
+    }
+
+    fn start_market_data(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
         self.connect_market_data_stream(ev_tx);
     }
 }
 
-impl ConnectorBuilder for BinanceFutures {
-    type Error = BinanceFuturesError;
-
-    fn build_from(config: &str) -> Result<Self, Self::Error> {
-        let config: Config = toml::from_str(config)?;
-        if !config.private_stream_url.contains("{listen_key}") {
-            return Err(BinanceFuturesError::InvalidRequest);
-        }
-        let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
-        let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret);
-        let (symbol_tx, _) = broadcast::channel(500);
-
-        Ok(Self {
-            config,
-            symbols: Default::default(),
-            order_manager,
-            client,
-            symbol_tx,
-        })
-    }
-}
-
-impl Connector for BinanceFutures {
-    fn register(&mut self, symbol: String) {
-        let symbol = symbol.to_lowercase();
-        let mut symbols = self.symbols.lock().unwrap();
-        if symbols.insert(symbol.clone()) && self.symbol_tx.send(symbol.clone()).is_err() {
-            warn!(%symbol, "symbol registered without an active market stream receiver");
-        }
+impl ExecutionVenue for BinanceFutures {
+    fn start_account_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
+        self.connect_user_data_stream(ev_tx);
     }
 
-    fn order_manager(&self) -> Arc<Mutex<dyn GetOrders + Send + 'static>> {
-        self.order_manager.clone()
-    }
-
-    fn run(&mut self, mode: RunMode, ev_tx: UnboundedSender<PublishEvent>) {
-        self.connect_market_data_stream(ev_tx.clone());
-        if mode.allows_trading() {
-            self.connect_user_data_stream(ev_tx);
-        }
+    fn open_orders(&self, symbol: &str) -> Vec<Order> {
+        lock_recover(&self.order_manager).active_orders(symbol)
     }
 
     fn submit(&self, symbol: String, mut order: Order, tx: UnboundedSender<PublishEvent>) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         tokio::spawn(async move {
-            let client_order_id = order_manager
-                .lock()
-                .unwrap()
+            let client_order_id = lock_recover(&order_manager)
                 .prepare_client_order_id(symbol.clone(), order.clone());
 
             match client_order_id {
@@ -248,9 +265,7 @@ impl Connector for BinanceFutures {
                         .await;
                     match result {
                         Ok(resp) => {
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
+                            if let Some(order) = lock_recover(&order_manager)
                                 .update_from_rest(&client_order_id, &resp)
                             {
                                 let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
@@ -260,9 +275,7 @@ impl Connector for BinanceFutures {
                             }
                         }
                         Err(error) => {
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
+                            if let Some(order) = lock_recover(&order_manager)
                                 .update_submit_fail(&client_order_id, &error)
                             {
                                 let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
@@ -290,17 +303,13 @@ impl Connector for BinanceFutures {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         tokio::spawn(async move {
-            let client_order_id = order_manager
-                .lock()
-                .unwrap()
-                .get_client_order_id(&symbol, order.order_id);
+            let client_order_id =
+                lock_recover(&order_manager).get_client_order_id(&symbol, order.order_id);
 
             if let Some(client_order_id) = client_order_id {
                 match client.cancel_order(&client_order_id, &symbol).await {
                     Ok(resp) => {
-                        if let Some(order) = order_manager
-                            .lock()
-                            .unwrap()
+                        if let Some(order) = lock_recover(&order_manager)
                             .update_from_rest(&client_order_id, &resp)
                         {
                             let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
@@ -310,9 +319,7 @@ impl Connector for BinanceFutures {
                         }
                     }
                     Err(error) => {
-                        if let Some(order) = order_manager
-                            .lock()
-                            .unwrap()
+                        if let Some(order) = lock_recover(&order_manager)
                             .update_cancel_fail(&client_order_id, &error)
                         {
                             let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
