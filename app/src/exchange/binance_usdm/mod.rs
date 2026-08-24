@@ -104,13 +104,8 @@ impl BinanceFuturesError {
     fn submission_is_ambiguous(&self) -> bool {
         match self {
             Self::ReqError(_) => true,
-            Self::OrderError {
-                code: -1006 | -1007,
-                ..
-            } => true,
-            Self::OrderError { code: -1000, msg } => {
-                let message = msg.to_ascii_lowercase();
-                message.contains("unknown") || message.contains("execution status")
+            Self::OrderError { code, .. } => {
+                !matches!(*code, -5022 | -2019 | -1015 | -1008)
             }
             _ => false,
         }
