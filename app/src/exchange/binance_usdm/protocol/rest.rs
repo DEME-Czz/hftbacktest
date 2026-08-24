@@ -14,6 +14,13 @@ pub enum OrderResponseResult {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(untagged)]
+pub enum OpenOrdersResponse {
+    Ok(Vec<OrderResponse>),
+    Err(ErrorResponse),
+}
+
+#[derive(Deserialize, Debug)]
 pub struct OrderResponse {
     #[serde(rename = "clientOrderId")]
     pub client_order_id: String,

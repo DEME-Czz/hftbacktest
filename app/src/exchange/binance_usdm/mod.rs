@@ -28,7 +28,7 @@ use crate::{
         orders::{OrderManager, SharedOrderManager},
         rest::BinanceFuturesClient,
     },
-    ports::{ExecutionVenue, MarketDataSource, PublishEvent},
+    ports::{ExecutionVenue, MarketDataSource, PublishEvent, TradingInstrument},
 };
 
 use self::transport::{BackoffStrategy, ExponentialBackoff, Retry};
@@ -69,6 +69,8 @@ pub enum BinanceFuturesError {
     MalformedClientOrderId,
     #[error("OrderRecoveryConflict")]
     OrderRecoveryConflict,
+    #[error("UnsupportedPositionMode")]
+    UnsupportedPositionMode,
     #[error("OrderNotFound")]
     OrderNotFound,
     #[error("Tungstenite: {0:?}")]
@@ -187,12 +189,14 @@ impl BinanceFutures {
         });
     }
 
-    pub fn connect_user_data_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
+    pub fn connect_user_data_stream(
+        &self,
+        instruments: Vec<TradingInstrument>,
+        ev_tx: UnboundedSender<PublishEvent>,
+    ) {
         let url_template = self.config.private_stream_url.clone();
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
-        let instruments = self.symbols.clone();
-        let symbol_tx = self.symbol_tx.clone();
 
         tokio::spawn(async move {
             let _ = Retry::new(ExponentialBackoff::default())
@@ -213,7 +217,6 @@ impl BinanceFutures {
                         ev_tx.clone(),
                         order_manager.clone(),
                         instruments.clone(),
-                        symbol_tx.subscribe(),
                     );
                     let listen_key = stream.get_listen_key().await?;
                     let url = url_template.replace("{listen_key}", &listen_key);
@@ -245,8 +248,12 @@ impl MarketDataSource for BinanceFutures {
 }
 
 impl ExecutionVenue for BinanceFutures {
-    fn start_account_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
-        self.connect_user_data_stream(ev_tx);
+    fn start_account_stream(
+        &self,
+        instruments: Vec<TradingInstrument>,
+        ev_tx: UnboundedSender<PublishEvent>,
+    ) {
+        self.connect_user_data_stream(instruments, ev_tx);
     }
 
     fn open_orders(&self, symbol: &str) -> Vec<Order> {

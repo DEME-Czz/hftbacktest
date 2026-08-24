@@ -9,7 +9,9 @@ use sha2::Sha256;
 use super::{
     BinanceFuturesError,
     protocol::{
-        rest::{self, OrderResponse, OrderResponseResult, PositionInformationV3},
+        rest::{
+            self, OpenOrdersResponse, OrderResponse, OrderResponseResult, PositionInformationV3,
+        },
         stream::ListenKey,
     },
 };
@@ -249,6 +251,22 @@ impl BinanceFuturesClient {
         &self,
     ) -> Result<Vec<PositionInformationV3>, BinanceFuturesError> {
         self.get("/fapi/v3/positionRisk", String::new()).await
+    }
+
+    pub async fn get_open_orders(
+        &self,
+        symbol: &str,
+    ) -> Result<Vec<OrderResponse>, BinanceFuturesError> {
+        let response: OpenOrdersResponse = self
+            .get("/fapi/v1/openOrders", format!("symbol={symbol}"))
+            .await?;
+        match response {
+            OpenOrdersResponse::Ok(orders) => Ok(orders),
+            OpenOrdersResponse::Err(error) => Err(BinanceFuturesError::OrderError {
+                code: error.code,
+                msg: error.msg,
+            }),
+        }
     }
 
     pub async fn get_depth(&self, symbol: &str) -> Result<rest::Depth, BinanceFuturesError> {

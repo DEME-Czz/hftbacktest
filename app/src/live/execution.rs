@@ -110,7 +110,7 @@ mod tests {
             risk::{RiskConfig, RiskGate},
             runtime::LiveStrategyRuntime,
         },
-        ports::{ExecutionVenue, PublishEvent},
+        ports::{ExecutionVenue, PublishEvent, TradingInstrument},
     };
 
     #[derive(Clone, Default)]
@@ -120,7 +120,12 @@ mod tests {
     }
 
     impl ExecutionVenue for FakeConnector {
-        fn start_account_stream(&self, _tx: UnboundedSender<PublishEvent>) {}
+        fn start_account_stream(
+            &self,
+            _instruments: Vec<TradingInstrument>,
+            _tx: UnboundedSender<PublishEvent>,
+        ) {
+        }
         fn open_orders(&self, _symbol: &str) -> Vec<Order> {
             Vec::new()
         }

@@ -15,7 +15,7 @@ use super::{
     risk::{RiskConfig, RiskGate},
     runtime::LiveStrategyRuntime,
 };
-use crate::ports::{LiveConnector, PublishEvent, RunMode};
+use crate::ports::{LiveConnector, PublishEvent, RunMode, TradingInstrument};
 
 pub type StrategyRuntimes = HashMap<String, LiveStrategyRuntime<BuiltinStrategy>>;
 
@@ -101,7 +101,15 @@ impl<C: LiveConnector> LiveService<C> {
         }
         self.connector.start_market_data(tx.clone());
         if self.mode.allows_trading() {
-            self.connector.start_account_stream(tx.clone());
+            let instruments = self
+                .runtimes
+                .values()
+                .map(|runtime| TradingInstrument {
+                    symbol: runtime.symbol().to_string(),
+                    tick_size: runtime.tick_size(),
+                })
+                .collect();
+            self.connector.start_account_stream(instruments, tx.clone());
         }
 
         let mut account_readiness = AccountReadiness::default();
@@ -125,12 +133,6 @@ impl<C: LiveConnector> LiveService<C> {
                 event = rx.recv() => match event {
                     Some(PublishEvent::LiveEvent(live)) => {
                         trace!(?live, "runtime event");
-                        if let LiveEvent::Position { symbol, .. } = &live
-                            && self.runtimes.contains_key(symbol)
-                            && account_readiness.reconcile(symbol)
-                        {
-                            info!(%symbol, "initial position state synchronized");
-                        }
                         if let Some(symbol) = live_symbol(&live)
                             && let Some(runtime) = self.runtimes.get_mut(symbol)
                         {
@@ -161,6 +163,13 @@ impl<C: LiveConnector> LiveService<C> {
                     Some(PublishEvent::AccountStreamDisconnected) => {
                         account_readiness.disconnect();
                         warn!("Binance account stream disconnected; execution paused until positions are reconciled");
+                    }
+                    Some(PublishEvent::AccountSnapshotReady { symbol }) => {
+                        if self.runtimes.contains_key(&symbol)
+                            && account_readiness.reconcile(&symbol)
+                        {
+                            info!(%symbol, "position and open-order state synchronized");
+                        }
                     }
                     None => break,
                 }
@@ -237,21 +246,20 @@ mod tests {
 
     use hftbacktest::{
         strategy::{BuiltinStrategy, BuiltinStrategyConfig, GridConfig},
-        types::{
-            Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT, LiveEvent, Order,
-        },
+        types::{Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT, LiveEvent, Order},
     };
     use tokio::{sync::mpsc::UnboundedSender, time};
 
     use super::{AccountReadiness, LiveService, StrategyRuntimes};
     use crate::{
         live::{risk::RiskConfig, runtime::LiveStrategyRuntime},
-        ports::{ExecutionVenue, MarketDataSource, PublishEvent, RunMode},
+        ports::{ExecutionVenue, MarketDataSource, PublishEvent, RunMode, TradingInstrument},
     };
 
     #[derive(Clone, Default)]
     struct PositionOnlyConnector {
         submitted: Arc<Mutex<Vec<Order>>>,
+        snapshot_ready: bool,
     }
 
     impl MarketDataSource for PositionOnlyConnector {
@@ -260,13 +268,23 @@ mod tests {
     }
 
     impl ExecutionVenue for PositionOnlyConnector {
-        fn start_account_stream(&self, tx: UnboundedSender<PublishEvent>) {
+        fn start_account_stream(
+            &self,
+            _instruments: Vec<TradingInstrument>,
+            tx: UnboundedSender<PublishEvent>,
+        ) {
             tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
                 symbol: "btcusdt".to_string(),
                 qty: 0.0,
                 exch_ts: 1,
             }))
             .unwrap();
+            if self.snapshot_ready {
+                tx.send(PublishEvent::AccountSnapshotReady {
+                    symbol: "btcusdt".to_string(),
+                })
+                .unwrap();
+            }
             for (ev, px) in [
                 (LOCAL_BID_DEPTH_EVENT, 100.0),
                 (LOCAL_ASK_DEPTH_EVENT, 101.0),
@@ -358,5 +376,29 @@ mod tests {
             submitted.lock().unwrap().is_empty(),
             "a position snapshot alone must not authorize order submission"
         );
+    }
+
+    #[tokio::test]
+    async fn completed_account_snapshot_enables_execution() {
+        let connector = PositionOnlyConnector {
+            snapshot_ready: true,
+            ..PositionOnlyConnector::default()
+        };
+        let submitted = connector.submitted.clone();
+        let service = LiveService::new(
+            connector,
+            grid_runtimes(),
+            RiskConfig::default(),
+            RunMode::Execute,
+        );
+
+        service
+            .run_until(async {
+                time::sleep(Duration::from_millis(20)).await;
+            })
+            .await
+            .unwrap();
+
+        assert!(!submitted.lock().unwrap().is_empty());
     }
 }

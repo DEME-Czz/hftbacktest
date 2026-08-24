@@ -1,38 +1,30 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     time::{Duration, Instant},
 };
 
 use futures_util::{SinkExt, StreamExt};
 use hftbacktest::prelude::*;
-use tokio::{
-    select,
-    sync::{
-        broadcast::{Receiver, error::RecvError},
-        mpsc::UnboundedSender,
-    },
-    time,
-};
+use tokio::{select, sync::mpsc::UnboundedSender, time};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, warn};
 
 use crate::{
     exchange::binance_usdm::{
-        BinanceFuturesError, SharedSymbolSet, lock_recover,
+        BinanceFuturesError, lock_recover,
         orders::SharedOrderManager,
         protocol::stream::{EventStream, Stream},
         rest::BinanceFuturesClient,
         transport::connect_websocket,
     },
-    ports::PublishEvent,
+    ports::{PublishEvent, TradingInstrument},
 };
 
 pub struct UserDataStream {
-    symbols: SharedSymbolSet,
+    instruments: Vec<TradingInstrument>,
     client: BinanceFuturesClient,
     ev_tx: UnboundedSender<PublishEvent>,
     order_manager: SharedOrderManager,
-    symbol_rx: Receiver<String>,
 }
 
 impl UserDataStream {
@@ -40,15 +32,13 @@ impl UserDataStream {
         client: BinanceFuturesClient,
         ev_tx: UnboundedSender<PublishEvent>,
         order_manager: SharedOrderManager,
-        symbols: SharedSymbolSet,
-        symbol_rx: Receiver<String>,
+        instruments: Vec<TradingInstrument>,
     ) -> Self {
         Self {
-            symbols,
+            instruments,
             client,
             ev_tx,
             order_manager,
-            symbol_rx,
         }
     }
 
@@ -83,7 +73,7 @@ impl UserDataStream {
                     }
                     Ok(None) => {}
                     Err(BinanceFuturesError::PrefixUnmatched) => {}
-                    Err(error) => error!(?error, ?data, "couldn't update order from user stream"),
+                    Err(error) => return Err(error),
                 }
             }
             EventStream::TradeLite(_data) => {}
@@ -97,18 +87,14 @@ impl UserDataStream {
         let mut interval = time::interval(Duration::from_secs(60 * 30));
         let mut ping_checker = time::interval(Duration::from_secs(10));
 
-        let symbols: HashSet<_> = lock_recover(&self.symbols).iter().cloned().collect();
-        let client = self.client.clone();
-        let ev_tx = self.ev_tx.clone();
         let mut last_ping = Instant::now();
-
-        tokio::spawn(async move {
-            if let Err(error) =
-                get_position_information(client.clone(), symbols, ev_tx.clone()).await
-            {
-                error!(?error, "couldn't get initial position information");
-            }
-        });
+        reconcile_account_state(
+            self.client.clone(),
+            &self.instruments,
+            self.order_manager.clone(),
+            self.ev_tx.clone(),
+        )
+        .await?;
 
         loop {
             select! {
@@ -125,27 +111,6 @@ impl UserDataStream {
                     if last_ping.elapsed() > Duration::from_secs(300) {
                         warn!("user data stream ping timeout");
                         return Err(BinanceFuturesError::ConnectionInterrupted);
-                    }
-                }
-                msg = self.symbol_rx.recv() => {
-                    match msg {
-                        Ok(symbol) => {
-                            let client = self.client.clone();
-                            let ev_tx = self.ev_tx.clone();
-                            tokio::spawn(async move {
-                                // Always reconcile the newly registered symbol. This removes the
-                                // startup race where the private stream snapshots the symbol set
-                                // before main() calls register(), which otherwise leaves live
-                                // execution waiting forever for its initial position state.
-                                let mut symbols = HashSet::new();
-                                symbols.insert(symbol.clone());
-                                if let Err(error) = get_position_information(client, symbols, ev_tx).await {
-                                    error!(?error, %symbol, "couldn't reconcile registered symbol position");
-                                }
-                            });
-                        }
-                        Err(RecvError::Closed) => return Ok(()),
-                        Err(RecvError::Lagged(num)) => error!(num, "user stream symbol registrations were missed"),
                     }
                 }
                 message = read.next() => match message {
@@ -176,27 +141,62 @@ impl UserDataStream {
     }
 }
 
-pub async fn get_position_information(
+pub async fn reconcile_account_state(
     client: BinanceFuturesClient,
-    mut symbols: HashSet<String>,
+    instruments: &[TradingInstrument],
+    order_manager: SharedOrderManager,
     ev_tx: UnboundedSender<PublishEvent>,
 ) -> Result<(), BinanceFuturesError> {
-    let position_information = client.get_position_information().await?;
-    position_information.into_iter().for_each(|position| {
-        if symbols.remove(&position.symbol) {
-            let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
-                symbol: position.symbol,
-                qty: position.position_amount,
-                exch_ts: position.update_time * 1_000_000,
-            }));
+    let configured_symbols: hashbrown::HashSet<_> = instruments
+        .iter()
+        .map(|instrument| instrument.symbol.as_str())
+        .collect();
+    let mut positions = HashMap::new();
+    for position in client.get_position_information().await? {
+        if configured_symbols.contains(position.symbol.as_str()) {
+            if position.position_side != "BOTH" {
+                return Err(BinanceFuturesError::UnsupportedPositionMode);
+            }
+            positions.insert(position.symbol.clone(), position);
         }
-    });
-    for symbol in symbols {
-        let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
-            symbol,
-            qty: 0.0,
-            exch_ts: 0,
-        }));
+    }
+
+    for instrument in instruments {
+        let open_orders = client.get_open_orders(&instrument.symbol).await?;
+        let recovered = lock_recover(&order_manager).reconcile_open_orders(
+            &instrument.symbol,
+            instrument.tick_size,
+            &open_orders,
+        )?;
+        let (qty, exch_ts) = positions
+            .remove(&instrument.symbol)
+            .map(|position| {
+                (
+                    position.position_amount,
+                    position.update_time.saturating_mul(1_000_000),
+                )
+            })
+            .unwrap_or((0.0, 0));
+        ev_tx
+            .send(PublishEvent::LiveEvent(LiveEvent::Position {
+                symbol: instrument.symbol.clone(),
+                qty,
+                exch_ts,
+            }))
+            .map_err(|_| BinanceFuturesError::PublishSinkClosed)?;
+        for order in recovered {
+            ev_tx
+                .send(PublishEvent::LiveEvent(LiveEvent::Order {
+                    symbol: instrument.symbol.clone(),
+                    order,
+                }))
+                .map_err(|_| BinanceFuturesError::PublishSinkClosed)?;
+        }
+        ev_tx
+            .send(PublishEvent::AccountSnapshotReady {
+                symbol: instrument.symbol.clone(),
+            })
+            .map_err(|_| BinanceFuturesError::PublishSinkClosed)?;
     }
     Ok(())
 }

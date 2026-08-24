@@ -159,6 +159,9 @@ where
     pub fn depth(&self) -> &HashMapMarketDepth {
         &self.depth
     }
+    pub fn tick_size(&self) -> f64 {
+        self.depth.tick_size()
+    }
     pub fn position(&self) -> f64 {
         self.position
     }
