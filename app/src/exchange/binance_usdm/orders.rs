@@ -11,7 +11,7 @@ use crate::exchange::binance_usdm::{
     protocol::{rest::OrderResponse, stream::OrderTradeUpdate},
 };
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct OrderExt {
     symbol: String,
     order: Order,
@@ -37,7 +37,7 @@ pub type ClientOrderId = String;
 /// immediately notified to the bot, but the Connector must still retain the `client_order_id` in
 /// case an update arrives later from the other channel, which has not yet sent the deletion
 /// message.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OrderManager {
     client_order_ids: ClientOrderIdCodec,
     orders: HashMap<ClientOrderId, OrderExt>,
@@ -388,6 +388,24 @@ impl OrderManager {
         Ok(updates)
     }
 
+    pub(crate) fn reconcile_all_open_orders(
+        &mut self,
+        snapshots: &[(String, f64, Vec<OrderResponse>)],
+    ) -> Result<Vec<(String, Vec<Order>)>, BinanceFuturesError> {
+        let backup = self.clone();
+        let mut reconciled = Vec::with_capacity(snapshots.len());
+        for (symbol, tick_size, responses) in snapshots {
+            match self.reconcile_open_orders(symbol, *tick_size, responses) {
+                Ok(orders) => reconciled.push((symbol.clone(), orders)),
+                Err(error) => {
+                    *self = backup;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(reconciled)
+    }
+
     /// Due to API instability or network issues, discrepancies can occur where an order is deleted
     /// by one channel but remains active because its deletion wasn't confirmed by both channels.
     /// The gc method resolves this by removing orders that were deleted by one channel but not
@@ -529,10 +547,7 @@ mod tests {
             (
                 "ethusdt".to_string(),
                 0.01,
-                vec![open_order_for(
-                    "strategy-a-v1-not-base36-AbCd12",
-                    "ETHUSDT",
-                )],
+                vec![open_order_for("strategy-a-v1-not-base36-AbCd12", "ETHUSDT")],
             ),
         ];
 

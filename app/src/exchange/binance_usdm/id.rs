@@ -100,7 +100,7 @@ fn encode_base36(mut value: OrderId) -> String {
     String::from_utf8_lossy(&encoded[cursor..]).into_owned()
 }
 
-#[derive(Eq, Hash, PartialEq, Debug)]
+#[derive(Clone, Eq, Hash, PartialEq, Debug)]
 pub struct SymbolOrderId {
     pub symbol: String,
     pub order_id: OrderId,

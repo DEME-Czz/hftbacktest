@@ -178,12 +178,16 @@ pub async fn reconcile_account_state(
         }
     }
 
-    for (instrument, open_orders) in instruments.iter().zip(open_order_snapshots.iter()) {
-        let recovered = lock_recover(&order_manager).reconcile_open_orders(
-            &instrument.symbol,
-            instrument.tick_size,
-            open_orders,
-        )?;
+    let snapshots: Vec<_> = instruments
+        .iter()
+        .zip(open_order_snapshots)
+        .map(|(instrument, open_orders)| {
+            (instrument.symbol.clone(), instrument.tick_size, open_orders)
+        })
+        .collect();
+    let reconciled = lock_recover(&order_manager).reconcile_all_open_orders(&snapshots)?;
+
+    for (instrument, (_, recovered)) in instruments.iter().zip(reconciled) {
         let (qty, exch_ts) = positions
             .remove(&instrument.symbol)
             .map(|position| {
