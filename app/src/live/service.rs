@@ -688,6 +688,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canceled_order_with_historical_fills_does_not_wait_for_a_new_position_event() {
+        let mut readiness = AccountReadiness::default();
+        readiness.observe_position("btcusdt", 100, true);
+        assert!(readiness.reconcile("btcusdt"));
+        let mut canceled = Order::new(
+            12,
+            1_000,
+            0.1,
+            0.001,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::GTC,
+        );
+        canceled.status = hftbacktest::types::Status::Canceled;
+        canceled.exec_qty = 0.0005;
+        canceled.exch_timestamp = 200;
+
+        readiness.observe_order("btcusdt", &canceled);
+
+        assert!(readiness.contains("btcusdt"));
+    }
+
     #[tokio::test]
     async fn position_without_order_recovery_never_enables_execution() {
         let connector = PositionOnlyConnector::default();
