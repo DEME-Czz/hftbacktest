@@ -302,7 +302,7 @@ where
             if prev_best_tick == INVALID_MIN
                 || (orders_borrowed.len() as i64) < new_best_tick - prev_best_tick
             {
-                for (_, order) in orders_borrowed.iter_mut() {
+                for order in orders_borrowed.values_mut() {
                     if order.side == Side::Sell && order.price_tick <= new_best_tick {
                         self.filled_orders.push(order.order_id);
                         self.fill::<true>(
@@ -350,7 +350,7 @@ where
             if prev_best_tick == INVALID_MAX
                 || (orders_borrowed.len() as i64) < prev_best_tick - new_best_tick
             {
-                for (_, order) in orders_borrowed.iter_mut() {
+                for order in orders_borrowed.values_mut() {
                     if order.side == Side::Buy && order.price_tick >= new_best_tick {
                         self.filled_orders.push(order.order_id);
                         self.fill::<true>(
@@ -776,7 +776,7 @@ where
                 if self.depth.best_bid_tick() == INVALID_MIN
                     || (orders_borrowed.len() as i64) < price_tick - self.depth.best_bid_tick()
                 {
-                    for (_, order) in orders_borrowed.iter_mut() {
+                    for order in orders_borrowed.values_mut() {
                         if order.side == Side::Sell {
                             self.check_if_sell_filled(order, price_tick, qty, event.exch_ts)?;
                         }
@@ -802,7 +802,7 @@ where
                 if self.depth.best_ask_tick() == INVALID_MAX
                     || (orders_borrowed.len() as i64) < self.depth.best_ask_tick() - price_tick
                 {
-                    for (_, order) in orders_borrowed.iter_mut() {
+                    for order in orders_borrowed.values_mut() {
                         if order.side == Side::Buy {
                             self.check_if_buy_filled(order, price_tick, qty, event.exch_ts)?;
                         }

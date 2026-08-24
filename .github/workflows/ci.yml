@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches:
+      - master
       - refactor/hft-simplification
   pull_request:
 
@@ -15,11 +16,11 @@ jobs:
         with:
           toolchain: 1.91.1
           components: rustfmt, clippy
-      - name: Format working tree
-        run: cargo fmt --all
+      - name: Format
+        run: cargo fmt --all -- --check
       - name: Check
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --all-targets --locked
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings

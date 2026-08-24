@@ -317,7 +317,7 @@ impl ApplySnapshot for HashMapMarketDepth {
             .filter(|(tick, _)| **tick <= self.best_bid_tick)
             .map(|(tick, qty)| (*tick, *qty))
             .collect::<Vec<_>>();
-        bids.sort_by(|a, b| b.0.cmp(&a.0));
+        bids.sort_by_key(|bid| std::cmp::Reverse(bid.0));
         for (price_tick, qty) in bids {
             events.push(Event {
                 ev: EXCH_EVENT | LOCAL_EVENT | BUY_EVENT | DEPTH_SNAPSHOT_EVENT,
@@ -337,7 +337,7 @@ impl ApplySnapshot for HashMapMarketDepth {
             .filter(|(tick, _)| **tick >= self.best_ask_tick)
             .map(|(tick, qty)| (*tick, *qty))
             .collect::<Vec<_>>();
-        asks.sort_by(|a, b| a.0.cmp(&b.0));
+        asks.sort_by_key(|ask| ask.0);
         for (price_tick, qty) in asks {
             events.push(Event {
                 ev: EXCH_EVENT | LOCAL_EVENT | SELL_EVENT | DEPTH_SNAPSHOT_EVENT,

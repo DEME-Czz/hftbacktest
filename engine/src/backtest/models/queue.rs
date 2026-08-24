@@ -100,11 +100,13 @@ where
     MD: MarketDepth,
 {
     fn new_order(&self, order: &mut Order, depth: &MD) {
-        let mut q = QueuePos::default();
-        q.front_q_qty = if order.side == Side::Buy {
-            depth.bid_qty_at_tick(order.price_tick)
-        } else {
-            depth.ask_qty_at_tick(order.price_tick)
+        let q = QueuePos {
+            front_q_qty: if order.side == Side::Buy {
+                depth.bid_qty_at_tick(order.price_tick)
+            } else {
+                depth.ask_qty_at_tick(order.price_tick)
+            },
+            ..Default::default()
         };
         order.q = Box::new(q);
     }

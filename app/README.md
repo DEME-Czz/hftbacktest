@@ -1,9 +1,11 @@
 # App
 
-Binance USD-M Futures I/O 与运行时。
+`app` 提供 Binance USD-M Futures I/O、实时状态管理与策略执行入口。
 
-- `hft-app`: Binance Market/User stream 运行入口，默认只消费并输出标准化事件。
-- `collector`: 复用同一 Binance Adapter，把标准化 Event 写入 CSV。
-- `runtime::LiveStrategyRuntime`: 维护 L2/订单/持仓状态，在完整 depth batch 后向共享 Strategy API 提供决策上下文。
+- `config.rs`：组合并校验 Binance、Runtime、策略和风险配置；错误不会回显凭证。
+- `ports.rs`：`MarketDataSource` 与 `ExecutionVenue` 两个应用端口。
+- `exchange/binance_usdm/`：WebSocket、REST、协议 DTO 和订单回报合并。
+- `live/`：L2/订单/持仓状态、RiskGate、Executor 与 `LiveService`。
+- `bin/collector.rs`：只启动公共行情，把标准化 Event 写入 CSV。
 
-实盘下单必须由调用方显式执行 StrategyCommand；默认运行入口不会自动交易。
+`hft-app` 默认是 decision-only dry-run；只有显式传入 `--execute`，完成凭证/端点校验并收到初始持仓后才允许 Submit/Cancel。账户流断开会立即暂停执行，逐个 symbol 重新完成持仓对账后才恢复。

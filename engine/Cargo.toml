@@ -1,10 +1,10 @@
 [package]
 name = "hftbacktest"
 version = "0.10.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 license = "MIT"
 description = "Rust order-book-driven L2 HFT backtesting engine"
-rust-version = "1.91.1"
 
 [features]
 default = ["backtest"]
