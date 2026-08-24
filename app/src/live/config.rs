@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::risk::RiskConfig;
 use hftbacktest::strategy::{BuiltinStrategy, BuiltinStrategyConfig, GridConfig};
 use serde::Deserialize;
@@ -8,6 +10,43 @@ pub struct RuntimeConfig {
     pub strategies: Vec<LiveStrategyConfig>,
     #[serde(default)]
     pub risk: RiskConfig,
+    #[serde(default)]
+    pub safety: SafetyConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SafetyConfig {
+    #[serde(default = "default_stale_market_timeout_ms")]
+    pub stale_market_timeout_ms: u64,
+    #[serde(default)]
+    pub kill_switch_file: Option<PathBuf>,
+}
+
+fn default_stale_market_timeout_ms() -> u64 {
+    5_000
+}
+
+impl Default for SafetyConfig {
+    fn default() -> Self {
+        Self {
+            stale_market_timeout_ms: default_stale_market_timeout_ms(),
+            kill_switch_file: None,
+        }
+    }
+}
+
+impl SafetyConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.stale_market_timeout_ms == 0
+            || self
+                .kill_switch_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err("invalid live safety configuration");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

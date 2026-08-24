@@ -30,7 +30,13 @@ async fn main() -> Result<()> {
     let runtimes = build_runtimes(&config.runtime.strategies)?;
     let connector = BinanceFutures::new(config.exchange)?;
 
-    LiveService::new(connector, runtimes, config.runtime.risk, mode)
-        .run()
-        .await
+    LiveService::with_safety(
+        connector,
+        runtimes,
+        config.runtime.risk,
+        config.runtime.safety,
+        mode,
+    )
+    .run()
+    .await
 }

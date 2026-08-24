@@ -198,6 +198,9 @@ impl BinanceFutures {
                     }
                     Err(error) => {
                         error!(?error, "market data stream connection interrupted");
+                        if ev_tx.send(PublishEvent::MarketStreamDisconnected).is_err() {
+                            break;
+                        }
                         let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Error(
                             LiveError::with(ErrorKind::ConnectionInterrupted, error.into()),
                         )));

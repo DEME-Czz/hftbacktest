@@ -35,6 +35,8 @@ pub enum ConfigError {
     InvalidRisk,
     #[error("order_prefix must contain 1-12 Binance-safe characters")]
     InvalidOrderPrefix,
+    #[error("invalid live safety configuration")]
+    InvalidSafety,
 }
 
 impl AppConfig {
@@ -49,6 +51,10 @@ impl AppConfig {
             .risk
             .validate()
             .map_err(|_| ConfigError::InvalidRisk)?;
+        self.runtime
+            .safety
+            .validate()
+            .map_err(|_| ConfigError::InvalidSafety)?;
         validate_order_prefix(&self.exchange.order_prefix)
             .map_err(|_| ConfigError::InvalidOrderPrefix)?;
         if self.exchange.public_stream_url.trim().is_empty()

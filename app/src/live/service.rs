@@ -1,6 +1,8 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs,
     future::Future,
+    io,
     time::Duration,
 };
 
@@ -10,10 +12,11 @@ use tokio::{select, signal, sync::mpsc::unbounded_channel, time};
 use tracing::{error, info, trace, warn};
 
 use super::{
-    config::LiveStrategyConfig,
+    config::{LiveStrategyConfig, SafetyConfig},
     execution::LiveExecutor,
     risk::{RiskConfig, RiskGate},
     runtime::LiveStrategyRuntime,
+    safety::SafetyState,
 };
 use crate::ports::{LiveConnector, PublishEvent, RunMode, TradingInstrument};
 
@@ -81,15 +84,27 @@ pub struct LiveService<C> {
     runtimes: StrategyRuntimes,
     executor: LiveExecutor,
     mode: RunMode,
+    safety: SafetyConfig,
 }
 
 impl<C: LiveConnector> LiveService<C> {
     pub fn new(connector: C, runtimes: StrategyRuntimes, risk: RiskConfig, mode: RunMode) -> Self {
+        Self::with_safety(connector, runtimes, risk, SafetyConfig::default(), mode)
+    }
+
+    pub fn with_safety(
+        connector: C,
+        runtimes: StrategyRuntimes,
+        risk: RiskConfig,
+        safety: SafetyConfig,
+        mode: RunMode,
+    ) -> Self {
         Self {
             connector,
             runtimes,
             executor: LiveExecutor::new(mode.allows_trading(), RiskGate::new(risk)),
             mode,
+            safety,
         }
     }
 
@@ -122,6 +137,19 @@ impl<C: LiveConnector> LiveService<C> {
         }
 
         let mut account_readiness = AccountReadiness::default();
+        let started_at = time::Instant::now();
+        let mut safety_state = SafetyState::new(
+            self.safety.stale_market_timeout_ms,
+            self.runtimes.keys().cloned(),
+        );
+        let safety_tick_ms = (self.safety.stale_market_timeout_ms / 4).clamp(25, 250);
+        let mut safety_interval = time::interval(Duration::from_millis(safety_tick_ms));
+        safety_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        let mut cancellation_requests = HashSet::new();
+        if kill_switch_is_active(self.safety.kill_switch_file.as_deref()) {
+            safety_state.trip_kill_switch();
+            error!("external kill switch was active at startup; live execution is latched off");
+        }
         info!(
             execute = self.mode.allows_trading(),
             symbols = self.runtimes.len(),
@@ -156,10 +184,21 @@ impl<C: LiveConnector> LiveService<C> {
                             if !runtime.take_depth_dirty() {
                                 continue;
                             }
+                            let now_ms = elapsed_ms(started_at);
+                            let has_open_orders = !self
+                                .connector
+                                .open_orders(runtime.symbol())
+                                .is_empty();
+                            safety_state.on_market_batch(
+                                runtime.symbol(),
+                                now_ms,
+                                has_open_orders,
+                            );
                             if self.mode.allows_trading()
-                                && !account_readiness.contains(runtime.symbol())
+                                && (!account_readiness.contains(runtime.symbol())
+                                    || !safety_state.can_submit(runtime.symbol(), now_ms))
                             {
-                                trace!(symbol = runtime.symbol(), "waiting for initial position synchronization");
+                                trace!(symbol = runtime.symbol(), "execution waiting for safe market and account state");
                                 continue;
                             }
                             let commands = runtime.decide();
@@ -171,7 +210,22 @@ impl<C: LiveConnector> LiveService<C> {
                     Some(PublishEvent::BatchStart) => {}
                     Some(PublishEvent::AccountStreamDisconnected) => {
                         account_readiness.disconnect();
-                        warn!("Binance account stream disconnected; execution paused until positions are reconciled");
+                        safety_state.mark_disconnected();
+                        self.cancel_safety_orders(
+                            &safety_state,
+                            &tx,
+                            &mut cancellation_requests,
+                        );
+                        warn!("Binance account stream disconnected; active orders are being canceled");
+                    }
+                    Some(PublishEvent::MarketStreamDisconnected) => {
+                        safety_state.mark_disconnected();
+                        self.cancel_safety_orders(
+                            &safety_state,
+                            &tx,
+                            &mut cancellation_requests,
+                        );
+                        warn!("Binance market stream disconnected; active orders are being canceled");
                     }
                     Some(PublishEvent::AccountSnapshotReady { symbol }) => {
                         if self.runtimes.contains_key(&symbol)
@@ -179,12 +233,38 @@ impl<C: LiveConnector> LiveService<C> {
                         {
                             info!(%symbol, "position and open-order state synchronized");
                         }
+                        self.cancel_safety_orders(
+                            &safety_state,
+                            &tx,
+                            &mut cancellation_requests,
+                        );
                     }
                     Some(PublishEvent::ExecutionUncertain { symbol }) => {
                         account_readiness.halt(&symbol);
+                        safety_state.halt_symbol(&symbol);
+                        self.cancel_safety_orders(
+                            &safety_state,
+                            &tx,
+                            &mut cancellation_requests,
+                        );
                         error!(%symbol, "execution halted: order submission outcome is unresolved");
                     }
                     None => break,
+                },
+                _ = safety_interval.tick() => {
+                    let now_ms = elapsed_ms(started_at);
+                    safety_state.on_tick(now_ms);
+                    if !safety_state.kill_latched()
+                        && kill_switch_is_active(self.safety.kill_switch_file.as_deref())
+                    {
+                        safety_state.trip_kill_switch();
+                        error!("external kill switch tripped; live execution is latched off");
+                    }
+                    self.cancel_safety_orders(
+                        &safety_state,
+                        &tx,
+                        &mut cancellation_requests,
+                    );
                 }
             }
         }
@@ -239,6 +319,55 @@ impl<C: LiveConnector> LiveService<C> {
             time::sleep(Duration::from_millis(50)).await;
         }
     }
+
+    fn cancel_safety_orders(
+        &self,
+        safety: &SafetyState,
+        tx: &tokio::sync::mpsc::UnboundedSender<PublishEvent>,
+        requested: &mut HashSet<(String, u64)>,
+    ) {
+        if !self.mode.allows_trading() {
+            return;
+        }
+        for symbol in self.runtimes.keys() {
+            if !safety.requires_cancel(symbol) {
+                continue;
+            }
+            let orders = self.connector.open_orders(symbol);
+            if orders.is_empty() {
+                requested.retain(|(requested_symbol, _)| requested_symbol != symbol);
+                continue;
+            }
+            for order in orders {
+                if requested.insert((symbol.clone(), order.order_id)) {
+                    warn!(%symbol, order_id = order.order_id, "canceling order due to live safety halt");
+                    self.connector.cancel(symbol.clone(), order, tx.clone());
+                }
+            }
+        }
+    }
+}
+
+fn elapsed_ms(started_at: time::Instant) -> u64 {
+    u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn kill_switch_is_active(path: Option<&std::path::Path>) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+    match fs::metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => {
+            error!(
+                ?error,
+                ?path,
+                "kill switch state could not be read; failing closed"
+            );
+            true
+        }
+    }
 }
 
 fn live_symbol(event: &LiveEvent) -> Option<&str> {
@@ -265,13 +394,15 @@ mod tests {
 
     use super::{AccountReadiness, LiveService, StrategyRuntimes};
     use crate::{
-        live::{risk::RiskConfig, runtime::LiveStrategyRuntime},
+        live::{config::SafetyConfig, risk::RiskConfig, runtime::LiveStrategyRuntime},
         ports::{ExecutionVenue, MarketDataSource, PublishEvent, RunMode, TradingInstrument},
     };
 
     #[derive(Clone, Default)]
     struct PositionOnlyConnector {
         submitted: Arc<Mutex<Vec<Order>>>,
+        open_orders: Arc<Mutex<Vec<Order>>>,
+        canceled: Arc<Mutex<Vec<Order>>>,
         snapshot_ready: bool,
     }
 
@@ -321,14 +452,20 @@ mod tests {
         }
 
         fn open_orders(&self, _symbol: &str) -> Vec<Order> {
-            Vec::new()
+            self.open_orders.lock().unwrap().clone()
         }
 
         fn submit(&self, _symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
             self.submitted.lock().unwrap().push(order);
         }
 
-        fn cancel(&self, _symbol: String, _order: Order, _tx: UnboundedSender<PublishEvent>) {}
+        fn cancel(&self, _symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
+            self.open_orders
+                .lock()
+                .unwrap()
+                .retain(|open| open.order_id != order.order_id);
+            self.canceled.lock().unwrap().push(order);
+        }
     }
 
     fn grid_runtimes() -> StrategyRuntimes {
@@ -413,5 +550,90 @@ mod tests {
             .unwrap();
 
         assert!(!submitted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_market_cancels_each_tracked_order_once() {
+        let connector = PositionOnlyConnector::default();
+        let mut order = Order::new(
+            7,
+            1_000,
+            0.1,
+            0.001,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::GTC,
+        );
+        order.status = hftbacktest::types::Status::New;
+        connector.open_orders.lock().unwrap().push(order);
+        let canceled = connector.canceled.clone();
+        let service = LiveService::with_safety(
+            connector,
+            grid_runtimes(),
+            RiskConfig::default(),
+            SafetyConfig {
+                stale_market_timeout_ms: 20,
+                kill_switch_file: None,
+            },
+            RunMode::Execute,
+        );
+
+        service
+            .run_until(async {
+                time::sleep(Duration::from_millis(90)).await;
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(canceled.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn kill_switch_present_at_start_prevents_submit_and_cancels_tracked_orders() {
+        let kill_switch = std::env::temp_dir().join(format!(
+            "hft-app-kill-switch-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::write(&kill_switch, b"halt").unwrap();
+
+        let connector = PositionOnlyConnector {
+            snapshot_ready: true,
+            ..PositionOnlyConnector::default()
+        };
+        let mut order = Order::new(
+            8,
+            1_000,
+            0.1,
+            0.001,
+            hftbacktest::types::Side::Sell,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::GTC,
+        );
+        order.status = hftbacktest::types::Status::New;
+        connector.open_orders.lock().unwrap().push(order);
+        let submitted = connector.submitted.clone();
+        let canceled = connector.canceled.clone();
+        let service = LiveService::with_safety(
+            connector,
+            grid_runtimes(),
+            RiskConfig::default(),
+            SafetyConfig {
+                stale_market_timeout_ms: 5_000,
+                kill_switch_file: Some(kill_switch.clone()),
+            },
+            RunMode::Execute,
+        );
+
+        service
+            .run_until(async {
+                time::sleep(Duration::from_millis(40)).await;
+            })
+            .await
+            .unwrap();
+        std::fs::remove_file(kill_switch).unwrap();
+
+        assert!(submitted.lock().unwrap().is_empty());
+        assert_eq!(canceled.lock().unwrap().len(), 1);
     }
 }

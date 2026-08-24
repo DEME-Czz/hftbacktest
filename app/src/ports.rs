@@ -30,6 +30,8 @@ pub enum PublishEvent {
     /// The private account stream is unavailable. Live execution must fail closed until each
     /// configured symbol has been reconciled again.
     AccountStreamDisconnected,
+    /// The public market stream is unavailable; outstanding strategy orders must be canceled.
+    MarketStreamDisconnected,
     /// Position and strategy-owned open orders were recovered from one REST snapshot after the
     /// private stream connected. This is the only event that may authorize execution.
     AccountSnapshotReady {
