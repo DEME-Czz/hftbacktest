@@ -398,12 +398,25 @@ mod tests {
         ports::{ExecutionVenue, MarketDataSource, PublishEvent, RunMode, TradingInstrument},
     };
 
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     struct PositionOnlyConnector {
         submitted: Arc<Mutex<Vec<Order>>>,
         open_orders: Arc<Mutex<Vec<Order>>>,
         canceled: Arc<Mutex<Vec<Order>>>,
         snapshot_ready: bool,
+        confirm_cancel: bool,
+    }
+
+    impl Default for PositionOnlyConnector {
+        fn default() -> Self {
+            Self {
+                submitted: Default::default(),
+                open_orders: Default::default(),
+                canceled: Default::default(),
+                snapshot_ready: false,
+                confirm_cancel: true,
+            }
+        }
     }
 
     impl MarketDataSource for PositionOnlyConnector {
@@ -466,10 +479,12 @@ mod tests {
         }
 
         fn cancel(&self, _symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
-            self.open_orders
-                .lock()
-                .unwrap()
-                .retain(|open| open.order_id != order.order_id);
+            if self.confirm_cancel {
+                self.open_orders
+                    .lock()
+                    .unwrap()
+                    .retain(|open| open.order_id != order.order_id);
+            }
             self.canceled.lock().unwrap().push(order);
         }
     }
@@ -641,5 +656,34 @@ mod tests {
 
         assert!(submitted.lock().unwrap().is_empty());
         assert_eq!(canceled.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_with_unconfirmed_orders_returns_an_error() {
+        let connector = PositionOnlyConnector {
+            confirm_cancel: false,
+            ..PositionOnlyConnector::default()
+        };
+        let mut order = Order::new(
+            9,
+            1_000,
+            0.1,
+            0.001,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::GTC,
+        );
+        order.status = hftbacktest::types::Status::New;
+        connector.open_orders.lock().unwrap().push(order);
+        let service = LiveService::new(
+            connector,
+            grid_runtimes(),
+            RiskConfig::default(),
+            RunMode::Execute,
+        );
+
+        let result = service.run_until(async {}).await;
+
+        assert!(result.is_err());
     }
 }
