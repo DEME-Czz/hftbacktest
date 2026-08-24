@@ -497,6 +497,27 @@ mod tests {
     use super::{BinanceConfig, BinanceFutures};
     use crate::ports::{ExecutionVenue, PublishEvent};
 
+    #[test]
+    fn unknown_exchange_submit_errors_are_ambiguous_by_default() {
+        let error = super::BinanceFuturesError::OrderError {
+            code: -1099,
+            msg: "execution status unknown".to_string(),
+        };
+
+        assert!(error.submission_is_ambiguous());
+    }
+
+    #[test]
+    fn known_exchange_rejections_are_definitive() {
+        for code in [-5022, -2019, -1015, -1008] {
+            let error = super::BinanceFuturesError::OrderError {
+                code,
+                msg: "request rejected".to_string(),
+            };
+            assert!(!error.submission_is_ambiguous(), "code {code}");
+        }
+    }
+
     async fn read_http_request(stream: &mut TcpStream) -> String {
         let mut request = Vec::new();
         let mut expected_len = None;
