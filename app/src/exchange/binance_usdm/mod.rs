@@ -71,6 +71,8 @@ pub enum BinanceFuturesError {
     OrderRecoveryConflict,
     #[error("UnsupportedPositionMode")]
     UnsupportedPositionMode,
+    #[error("InvalidAccountState")]
+    InvalidAccountState,
     #[error("OrderNotFound")]
     OrderNotFound,
     #[error("Tungstenite: {0:?}")]

@@ -54,13 +54,19 @@ impl UserDataStream {
             EventStream::ListenKeyExpired(_) => return Err(BinanceFuturesError::ListenKeyExpired),
             EventStream::AccountUpdate(data) => {
                 for position in data.account.position {
-                    let _ = self
-                        .ev_tx
+                    if position.position_side != "BOTH" {
+                        return Err(BinanceFuturesError::UnsupportedPositionMode);
+                    }
+                    if !position.position_amount.is_finite() {
+                        return Err(BinanceFuturesError::InvalidAccountState);
+                    }
+                    self.ev_tx
                         .send(PublishEvent::LiveEvent(LiveEvent::Position {
                             symbol: position.symbol,
                             qty: position.position_amount,
-                            exch_ts: data.transaction_time * 1_000_000,
-                        }));
+                            exch_ts: data.transaction_time.saturating_mul(1_000_000),
+                        }))
+                        .map_err(|_| BinanceFuturesError::PublishSinkClosed)?;
                 }
             }
             EventStream::OrderTradeUpdate(data) => {
@@ -147,6 +153,11 @@ pub async fn reconcile_account_state(
     order_manager: SharedOrderManager,
     ev_tx: UnboundedSender<PublishEvent>,
 ) -> Result<(), BinanceFuturesError> {
+    let mut open_order_snapshots = Vec::with_capacity(instruments.len());
+    for instrument in instruments {
+        open_order_snapshots.push(client.get_open_orders(&instrument.symbol).await?);
+    }
+
     let configured_symbols: hashbrown::HashSet<_> = instruments
         .iter()
         .map(|instrument| instrument.symbol.as_str())
@@ -157,16 +168,21 @@ pub async fn reconcile_account_state(
             if position.position_side != "BOTH" {
                 return Err(BinanceFuturesError::UnsupportedPositionMode);
             }
-            positions.insert(position.symbol.clone(), position);
+            if !position.position_amount.is_finite()
+                || positions
+                    .insert(position.symbol.clone(), position)
+                    .is_some()
+            {
+                return Err(BinanceFuturesError::InvalidAccountState);
+            }
         }
     }
 
-    for instrument in instruments {
-        let open_orders = client.get_open_orders(&instrument.symbol).await?;
+    for (instrument, open_orders) in instruments.iter().zip(open_order_snapshots.iter()) {
         let recovered = lock_recover(&order_manager).reconcile_open_orders(
             &instrument.symbol,
             instrument.tick_size,
-            &open_orders,
+            open_orders,
         )?;
         let (qty, exch_ts) = positions
             .remove(&instrument.symbol)

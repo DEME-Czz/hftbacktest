@@ -20,6 +20,7 @@ pub struct LiveStrategyRuntime<S> {
     last_trades: VecDeque<Event>,
     strategy: S,
     timestamp: i64,
+    position_exch_timestamp: i64,
     depth_dirty: bool,
 }
 
@@ -36,6 +37,7 @@ where
             last_trades: VecDeque::with_capacity(1024),
             strategy,
             timestamp: 0,
+            position_exch_timestamp: i64::MIN,
             depth_dirty: false,
         }
     }
@@ -85,8 +87,11 @@ where
                 qty,
                 exch_ts,
             } if symbol == &self.symbol => {
+                if !qty.is_finite() || *exch_ts < self.position_exch_timestamp {
+                    return false;
+                }
                 self.position = *qty;
-                self.timestamp = *exch_ts;
+                self.position_exch_timestamp = *exch_ts;
                 true
             }
             _ => false,
