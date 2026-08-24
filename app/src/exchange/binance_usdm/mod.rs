@@ -151,11 +151,33 @@ impl std::fmt::Debug for BinanceConfig {
 }
 
 type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
+type SharedInFlightSubmissions = Arc<Mutex<HashSet<String>>>;
+
+struct InFlightSubmissionGuard {
+    client_order_id: String,
+    submissions: SharedInFlightSubmissions,
+}
+
+impl InFlightSubmissionGuard {
+    fn new(client_order_id: String, submissions: SharedInFlightSubmissions) -> Self {
+        Self {
+            client_order_id,
+            submissions,
+        }
+    }
+}
+
+impl Drop for InFlightSubmissionGuard {
+    fn drop(&mut self) {
+        lock_recover(&self.submissions).remove(&self.client_order_id);
+    }
+}
 
 pub struct BinanceFutures {
     config: BinanceConfig,
     symbols: SharedSymbolSet,
     order_manager: SharedOrderManager,
+    submissions_in_flight: SharedInFlightSubmissions,
     client: BinanceFuturesClient,
     symbol_tx: Sender<String>,
 }
@@ -172,6 +194,7 @@ impl BinanceFutures {
             config,
             symbols: Default::default(),
             order_manager,
+            submissions_in_flight: Default::default(),
             client,
             symbol_tx,
         })
@@ -302,8 +325,14 @@ impl ExecutionVenue for BinanceFutures {
             let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
             return;
         };
+        let submissions_in_flight = self.submissions_in_flight.clone();
+        lock_recover(&submissions_in_flight).insert(client_order_id.clone());
 
         tokio::spawn(async move {
+            let _submission_guard = InFlightSubmissionGuard::new(
+                client_order_id.clone(),
+                submissions_in_flight,
+            );
             let result = client
                 .submit_order(
                     &client_order_id,
@@ -379,11 +408,22 @@ impl ExecutionVenue for BinanceFutures {
     fn cancel(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
+        let submissions_in_flight = self.submissions_in_flight.clone();
+        let client_order_id =
+            lock_recover(&order_manager).get_client_order_id(&symbol, order.order_id);
         tokio::spawn(async move {
-            let client_order_id =
-                lock_recover(&order_manager).get_client_order_id(&symbol, order.order_id);
-
             if let Some(client_order_id) = client_order_id {
+                while lock_recover(&submissions_in_flight).contains(&client_order_id) {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let still_tracked = lock_recover(&order_manager)
+                    .get_client_order_id(&symbol, order.order_id)
+                    .is_some_and(|current| current == client_order_id);
+                if !still_tracked {
+                    return;
+                }
+
                 match client.cancel_order(&client_order_id, &symbol).await {
                     Ok(resp) => {
                         if let Some(order) =
