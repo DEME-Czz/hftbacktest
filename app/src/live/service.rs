@@ -658,6 +658,31 @@ mod tests {
         assert!(!readiness.contains("ethusdt"));
     }
 
+    #[test]
+    fn account_deltas_cannot_bypass_the_startup_snapshot_barrier() {
+        let mut readiness = AccountReadiness::default();
+        let mut fill = Order::new(
+            11,
+            1_000,
+            0.1,
+            0.001,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::GTC,
+        );
+        fill.status = hftbacktest::types::Status::Filled;
+        fill.exec_qty = fill.qty;
+        fill.exch_timestamp = 200;
+
+        readiness.observe_order("btcusdt", &fill);
+        readiness.observe_position("btcusdt", 200, true);
+
+        assert!(
+            !readiness.contains("btcusdt"),
+            "account deltas alone must not authorize execution before recovery is ready"
+        );
+    }
+
     #[tokio::test]
     async fn position_without_order_recovery_never_enables_execution() {
         let connector = PositionOnlyConnector::default();
