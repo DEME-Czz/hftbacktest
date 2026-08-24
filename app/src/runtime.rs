@@ -210,6 +210,13 @@ where
     pub fn depth(&self) -> &HashMapMarketDepth { &self.depth }
     pub fn position(&self) -> f64 { self.position }
     pub fn open_orders(&self) -> usize { self.orders.len() }
+    pub fn active_order_exposure(&self, side: Side) -> f64 {
+        self.orders
+            .values()
+            .filter(|order| order.side == side && (order.active() || order.pending()))
+            .map(|order| order.leaves_qty)
+            .sum()
+    }
 }
 
 pub struct NoopStrategy;

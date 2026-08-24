@@ -24,7 +24,7 @@ use crate::{
         ordermanager::{OrderManager, SharedOrderManager},
         rest::BinanceFuturesClient,
     },
-    connector::{Connector, ConnectorBuilder, GetOrders, PublishEvent},
+    connector::{Connector, ConnectorBuilder, GetOrders, PublishEvent, RunMode},
     utils::{BackoffStrategy, ExponentialBackoff, Retry},
 };
 
@@ -38,6 +38,8 @@ pub enum BinanceFuturesError {
     ListenKeyExpired,
     #[error("ConnectionInterrupted")]
     ConnectionInterrupted,
+    #[error("PublishSinkClosed")]
+    PublishSinkClosed,
     #[error("ConnectionAbort: {0}")]
     ConnectionAbort(String),
     #[error("ReqError: {0:?}")]
@@ -104,10 +106,16 @@ impl BinanceFutures {
         let base_url = self.config.public_stream_url.clone();
         let client = self.client.clone();
         let symbol_rx = self.symbol_tx.subscribe();
+        let symbols = self.symbols.clone();
 
         // Construct the stream before spawning so register() always observes at least one
         // broadcast receiver. Reconnect reuses the same receiver and stream state.
-        let mut stream = market_data_stream::MarketDataStream::new(client, ev_tx.clone(), symbol_rx);
+        let mut stream = market_data_stream::MarketDataStream::new(
+            client,
+            ev_tx.clone(),
+            symbols,
+            symbol_rx,
+        );
 
         tokio::spawn(async move {
             let mut backoff = ExponentialBackoff::default();
@@ -115,6 +123,10 @@ impl BinanceFutures {
                 debug!(%base_url, "connecting Binance public market stream");
                 match stream.connect(&base_url).await {
                     Ok(()) => break,
+                    Err(BinanceFuturesError::PublishSinkClosed) => {
+                        debug!("market data consumer closed; stopping Binance public stream");
+                        break;
+                    }
                     Err(error) => {
                         error!(?error, "market data stream connection interrupted");
                         let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Error(
@@ -204,9 +216,9 @@ impl Connector for BinanceFutures {
         self.order_manager.clone()
     }
 
-    fn run(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn run(&mut self, mode: RunMode, ev_tx: UnboundedSender<PublishEvent>) {
         self.connect_market_data_stream(ev_tx.clone());
-        if !self.config.api_key.is_empty() && !self.config.secret.is_empty() {
+        if mode.allows_trading() {
             self.connect_user_data_stream(ev_tx);
         }
     }

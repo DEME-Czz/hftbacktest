@@ -3,7 +3,7 @@ use std::{collections::{HashMap, HashSet}, fs::read_to_string, process::exit, ti
 use clap::Parser;
 use hft_app::{
     binancefutures::BinanceFutures,
-    connector::{Connector, ConnectorBuilder, PublishEvent},
+    connector::{Connector, ConnectorBuilder, PublishEvent, RunMode},
     execution::LiveExecutor,
     risk::RiskGate,
     runtime::{LiveStrategyRuntime, RuntimeConfig},
@@ -100,7 +100,7 @@ async fn main() {
         .unwrap();
 
     let (tx, mut rx) = unbounded_channel();
-    connector.run(tx.clone());
+    connector.run(RunMode::from_execute(args.execute), tx.clone());
     for symbol in runtimes.keys() {
         connector.register(symbol.clone());
     }

@@ -42,6 +42,7 @@ impl RiskGate {
         command: &StrategyCommand,
         position: f64,
         open_orders: usize,
+        same_side_order_exposure: f64,
     ) -> Result<(), &'static str> {
         match command {
             StrategyCommand::Submit { price, qty, side, .. } => {
@@ -57,9 +58,12 @@ impl RiskGate {
                 if open_orders >= self.config.max_open_orders {
                     return Err("max_open_orders exceeded");
                 }
+                if !same_side_order_exposure.is_finite() || same_side_order_exposure < 0.0 {
+                    return Err("invalid active order exposure");
+                }
                 let projected = match side {
-                    Side::Buy => position + qty,
-                    Side::Sell => position - qty,
+                    Side::Buy => position + same_side_order_exposure + qty,
+                    Side::Sell => position - same_side_order_exposure - qty,
                     _ => return Err("unsupported order side"),
                 };
                 if projected.abs() > self.config.max_position {

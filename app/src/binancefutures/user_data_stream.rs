@@ -90,24 +90,10 @@ impl UserDataStream {
 
         let symbols: HashSet<_> = self.symbols.lock().unwrap().iter().cloned().collect();
         let client = self.client.clone();
-        let order_manager = self.order_manager.clone();
         let ev_tx = self.ev_tx.clone();
         let mut last_ping = Instant::now();
 
         tokio::spawn(async move {
-            for symbol in &symbols {
-                if let Err(error) = cancel_all(
-                    client.clone(),
-                    symbol.clone(),
-                    order_manager.clone(),
-                    ev_tx.clone(),
-                )
-                .await
-                {
-                    error!(?error, %symbol, "couldn't cancel all orders during initial reconciliation");
-                }
-            }
-
             if let Err(error) = get_position_information(client.clone(), symbols, ev_tx.clone()).await {
                 error!(?error, "couldn't get initial position information");
             }
@@ -134,18 +120,8 @@ impl UserDataStream {
                     match msg {
                         Ok(symbol) => {
                             let client = self.client.clone();
-                            let order_manager = self.order_manager.clone();
                             let ev_tx = self.ev_tx.clone();
                             tokio::spawn(async move {
-                                if let Err(error) = cancel_all(
-                                    client.clone(),
-                                    symbol.clone(),
-                                    order_manager,
-                                    ev_tx.clone(),
-                                ).await {
-                                    error!(?error, %symbol, "couldn't cancel all orders for registered symbol");
-                                }
-
                                 // Always reconcile the newly registered symbol. This removes the
                                 // startup race where the private stream snapshots the symbol set
                                 // before main() calls register(), which otherwise leaves live
@@ -187,23 +163,6 @@ impl UserDataStream {
             }
         }
     }
-}
-
-pub async fn cancel_all(
-    client: BinanceFuturesClient,
-    symbol: String,
-    order_manager: SharedOrderManager,
-    ev_tx: UnboundedSender<PublishEvent>,
-) -> Result<(), BinanceFuturesError> {
-    client.cancel_all_orders(&symbol).await?;
-    let orders = order_manager.lock().unwrap().cancel_all_from_rest(&symbol);
-    for order in orders {
-        let _ = ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-            symbol: symbol.clone(),
-            order,
-        }));
-    }
-    Ok(())
 }
 
 pub async fn get_position_information(

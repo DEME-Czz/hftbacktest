@@ -27,7 +27,16 @@ impl LiveExecutor {
         commands: Vec<StrategyCommand>,
     ) {
         for command in commands {
-            if let Err(reason) = self.risk.allow(&command, runtime.position(), runtime.open_orders()) {
+            let same_side_order_exposure = match &command {
+                StrategyCommand::Submit { side, .. } => runtime.active_order_exposure(*side),
+                StrategyCommand::Modify { .. } | StrategyCommand::Cancel { .. } => 0.0,
+            };
+            if let Err(reason) = self.risk.allow(
+                &command,
+                runtime.position(),
+                runtime.open_orders(),
+                same_side_order_exposure,
+            ) {
                 warn!(symbol = runtime.symbol(), ?command, reason, "strategy command rejected by risk gate");
                 continue;
             }
@@ -88,7 +97,7 @@ mod tests {
 
     use super::LiveExecutor;
     use crate::{
-        connector::{Connector, GetOrders, PublishEvent},
+        connector::{Connector, GetOrders, PublishEvent, RunMode},
         risk::{RiskConfig, RiskGate},
         runtime::LiveStrategyRuntime,
     };
@@ -110,7 +119,7 @@ mod tests {
         fn order_manager(&self) -> Arc<Mutex<dyn GetOrders + Send + 'static>> {
             Arc::new(Mutex::new(EmptyOrders))
         }
-        fn run(&mut self, _tx: UnboundedSender<PublishEvent>) {}
+        fn run(&mut self, _mode: RunMode, _tx: UnboundedSender<PublishEvent>) {}
         fn submit(&self, symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
             self.submitted.lock().unwrap().push((symbol, order));
         }

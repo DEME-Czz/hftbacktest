@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
 
@@ -20,6 +20,7 @@ use tracing::{debug, error, warn};
 use crate::{
     binancefutures::{
         BinanceFuturesError,
+        SharedSymbolSet,
         msg::{
             rest,
             stream,
@@ -36,6 +37,7 @@ const BROADCAST_TARGET: u64 = 0;
 pub struct MarketDataStream {
     client: BinanceFuturesClient,
     ev_tx: UnboundedSender<PublishEvent>,
+    symbols: SharedSymbolSet,
     symbol_rx: Receiver<String>,
     pending_depth_messages: HashMap<String, Vec<stream::Depth>>,
     prev_u: HashMap<String, i64>,
@@ -47,12 +49,14 @@ impl MarketDataStream {
     pub fn new(
         client: BinanceFuturesClient,
         ev_tx: UnboundedSender<PublishEvent>,
+        symbols: SharedSymbolSet,
         symbol_rx: Receiver<String>,
     ) -> Self {
         let (rest_tx, rest_rx) = unbounded_channel();
         Self {
             client,
             ev_tx,
+            symbols,
             symbol_rx,
             pending_depth_messages: Default::default(),
             prev_u: Default::default(),
@@ -76,25 +80,36 @@ impl MarketDataStream {
         });
     }
 
+    fn publish(&self, event: PublishEvent) -> Result<(), BinanceFuturesError> {
+        self.ev_tx
+            .send(event)
+            .map_err(|_| BinanceFuturesError::PublishSinkClosed)
+    }
+
+    fn reset_connection_state(&mut self) {
+        self.pending_depth_messages.clear();
+        self.prev_u.clear();
+        let (rest_tx, rest_rx) = unbounded_channel();
+        self.rest_tx = rest_tx;
+        self.rest_rx = rest_rx;
+    }
+
     fn emit_depth_levels(
         &self,
         symbol: &str,
         transaction_time: i64,
         bids: Vec<(String, String)>,
         asks: Vec<(String, String)>,
-    ) {
+    ) -> Result<(), BinanceFuturesError> {
         let Ok((bids, asks)) = parse_depth(bids, asks) else {
             error!(%symbol, "failed to parse Binance depth levels");
-            return;
+            return Ok(());
         };
 
-        self.ev_tx
-            .send(PublishEvent::BatchStart(BROADCAST_TARGET))
-            .unwrap();
+        self.publish(PublishEvent::BatchStart(BROADCAST_TARGET))?;
 
         for (px, qty) in bids {
-            self.ev_tx
-                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+            self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
                     symbol: symbol.to_string(),
                     event: Event {
                         ev: LOCAL_BID_DEPTH_EVENT,
@@ -106,13 +121,11 @@ impl MarketDataStream {
                         ival: 0,
                         fval: 0.0,
                     },
-                }))
-                .unwrap();
+                }))?;
         }
 
         for (px, qty) in asks {
-            self.ev_tx
-                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+            self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
                     symbol: symbol.to_string(),
                     event: Event {
                         ev: LOCAL_ASK_DEPTH_EVENT,
@@ -124,25 +137,22 @@ impl MarketDataStream {
                         ival: 0,
                         fval: 0.0,
                     },
-                }))
-                .unwrap();
+                }))?;
         }
 
-        self.ev_tx
-            .send(PublishEvent::BatchEnd(BROADCAST_TARGET))
-            .unwrap();
+        self.publish(PublishEvent::BatchEnd(BROADCAST_TARGET))
     }
 
-    fn emit_depth_update(&self, data: &stream::Depth) {
+    fn emit_depth_update(&self, data: &stream::Depth) -> Result<(), BinanceFuturesError> {
         self.emit_depth_levels(
             &data.symbol,
             data.transaction_time,
             data.bids.clone(),
             data.asks.clone(),
-        );
+        )
     }
 
-    fn handle_depth_update(&mut self, data: stream::Depth) {
+    fn handle_depth_update(&mut self, data: stream::Depth) -> Result<(), BinanceFuturesError> {
         let symbol = data.symbol.clone();
 
         if let Some(previous_u) = self.prev_u.get(&symbol).copied() {
@@ -157,11 +167,11 @@ impl MarketDataStream {
                 self.prev_u.remove(&symbol);
                 self.pending_depth_messages.insert(symbol.clone(), vec![data]);
                 self.request_snapshot(symbol);
-                return;
+                return Ok(());
             }
-            self.emit_depth_update(&data);
+            self.emit_depth_update(&data)?;
             self.prev_u.insert(symbol, data.last_update_id);
-            return;
+            return Ok(());
         }
 
         let pending = self
@@ -173,12 +183,16 @@ impl MarketDataStream {
         if request_snapshot {
             self.request_snapshot(symbol);
         }
+        Ok(())
     }
 
-    fn process_snapshot(&mut self, symbol: String, data: rest::Depth) {
+    fn process_snapshot(
+        &mut self,
+        symbol: String,
+        data: rest::Depth,
+    ) -> Result<(), BinanceFuturesError> {
         // Clear the local book before applying a fresh REST snapshot.
-        self.ev_tx
-            .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+        self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
                 symbol: symbol.clone(),
                 event: Event {
                     ev: LOCAL_DEPTH_CLEAR_EVENT,
@@ -190,15 +204,14 @@ impl MarketDataStream {
                     ival: 0,
                     fval: 0.0,
                 },
-            }))
-            .unwrap();
+            }))?;
 
         self.emit_depth_levels(
             &symbol,
             data.transaction_time,
             data.bids,
             data.asks,
-        );
+        )?;
 
         let mut pending = self
             .pending_depth_messages
@@ -212,7 +225,7 @@ impl MarketDataStream {
         }) else {
             // No buffered event bridges the snapshot yet; wait for a new update and fetch again.
             self.prev_u.remove(&symbol);
-            return;
+            return Ok(());
         };
 
         let mut previous_u = None;
@@ -227,28 +240,28 @@ impl MarketDataStream {
                     .or_default()
                     .push(event);
                 self.request_snapshot(symbol.clone());
-                return;
+                return Ok(());
             }
-            self.emit_depth_update(&event);
+            self.emit_depth_update(&event)?;
             previous_u = Some(event.last_update_id);
         }
 
         if let Some(last_u) = previous_u {
             self.prev_u.insert(symbol, last_u);
         }
+        Ok(())
     }
 
-    fn process_message(&mut self, stream: EventStream) {
+    fn process_message(&mut self, stream: EventStream) -> Result<(), BinanceFuturesError> {
         match stream {
-            EventStream::DepthUpdate(data) => self.handle_depth_update(data),
+            EventStream::DepthUpdate(data) => self.handle_depth_update(data)?,
             EventStream::Trade(data) => {
                 if data.type_ != "MARKET" {
-                    return;
+                    return Ok(());
                 }
                 match parse_px_qty_tup(data.price, data.qty) {
                     Ok((px, qty)) => {
-                        self.ev_tx
-                            .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                        self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
                                 symbol: data.symbol,
                                 event: Event {
                                     ev: if data.is_the_buyer_the_market_maker {
@@ -264,26 +277,42 @@ impl MarketDataStream {
                                     ival: 0,
                                     fval: 0.0,
                                 },
-                            }))
-                            .unwrap();
+                            }))?;
                     }
                     Err(error) => error!(?error, "failed to parse Binance trade stream"),
                 }
             }
             _ => unreachable!(),
         }
+        Ok(())
     }
 
     pub async fn connect(&mut self, url: &str) -> Result<(), BinanceFuturesError> {
         let (ws_stream, _) = connect_websocket(url).await?;
         let (mut write, mut read) = ws_stream.split();
+        self.reset_connection_state();
         let mut ping_checker = time::interval(Duration::from_secs(10));
         let mut last_ping = Instant::now();
+        let mut subscribed = HashSet::new();
+
+        let registered_symbols: Vec<_> = self
+            .symbols
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        for symbol in registered_symbols {
+            if subscribed.insert(symbol.clone()) {
+                let id = generate_rand_string(16);
+                write.send(Message::Text(subscription_request(&symbol, &id).into())).await?;
+            }
+        }
 
         loop {
             select! {
                 Some((symbol, data)) = self.rest_rx.recv() => {
-                    self.process_snapshot(symbol, data);
+                    self.process_snapshot(symbol, data)?;
                 }
                 _ = ping_checker.tick() => {
                     if last_ping.elapsed() > Duration::from_secs(300) {
@@ -292,12 +321,10 @@ impl MarketDataStream {
                 }
                 msg = self.symbol_rx.recv() => match msg {
                     Ok(symbol) => {
-                        let id = generate_rand_string(16);
-                        write.send(Message::Text(format!(r#"{{
-                            "method":"SUBSCRIBE",
-                            "params":["{symbol}@trade","{symbol}@depth@100ms"],
-                            "id":"{id}"
-                        }}"#).into())).await?;
+                        if subscribed.insert(symbol.clone()) {
+                            let id = generate_rand_string(16);
+                            write.send(Message::Text(subscription_request(&symbol, &id).into())).await?;
+                        }
                     }
                     Err(RecvError::Closed) => return Ok(()),
                     Err(RecvError::Lagged(num)) => {
@@ -307,7 +334,7 @@ impl MarketDataStream {
                 message = read.next() => match message {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<Stream>(&text) {
-                            Ok(Stream::EventStream(stream)) => self.process_message(stream),
+                            Ok(Stream::EventStream(stream)) => self.process_message(stream)?,
                             Ok(Stream::Result(result)) => debug!(?result, "Binance subscription response"),
                             Err(error) => error!(?error, %text, "failed to parse Binance stream"),
                         }
@@ -332,6 +359,14 @@ impl MarketDataStream {
     }
 }
 
+fn subscription_request(symbol: &str, id: &str) -> String {
+    format!(r#"{{
+        "method":"SUBSCRIBE",
+        "params":["{symbol}@trade","{symbol}@depth@100ms"],
+        "id":"{id}"
+    }}"#)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -348,7 +383,7 @@ mod tests {
     use tokio_tungstenite::accept_async;
 
     use super::MarketDataStream;
-    use crate::binancefutures::rest::BinanceFuturesClient;
+    use crate::binancefutures::{SharedSymbolSet, rest::BinanceFuturesClient};
 
     #[test]
     fn closed_event_sink_does_not_panic() {
@@ -356,10 +391,11 @@ mod tests {
         let (event_tx, event_rx) = unbounded_channel();
         drop(event_rx);
         let (symbol_tx, _) = broadcast::channel(4);
-        let stream = MarketDataStream::new(client, event_tx, symbol_tx.subscribe());
+        let symbols: SharedSymbolSet = Default::default();
+        let stream = MarketDataStream::new(client, event_tx, symbols, symbol_tx.subscribe());
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            stream.emit_depth_levels(
+            let _ = stream.emit_depth_levels(
                 "btcusdt",
                 1,
                 vec![("100.0".to_string(), "1.0".to_string())],
@@ -394,7 +430,17 @@ mod tests {
         let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "");
         let (event_tx, _event_rx) = unbounded_channel();
         let (symbol_tx, _) = broadcast::channel(4);
-        let mut stream = MarketDataStream::new(client, event_tx, symbol_tx.subscribe());
+        let symbols: SharedSymbolSet = Default::default();
+        symbols
+            .lock()
+            .unwrap()
+            .insert("btcusdt".to_string());
+        let mut stream = MarketDataStream::new(
+            client,
+            event_tx,
+            symbols,
+            symbol_tx.subscribe(),
+        );
         symbol_tx.send("btcusdt".to_string()).unwrap();
 
         let url = format!("ws://{address}");
