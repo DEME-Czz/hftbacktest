@@ -9,6 +9,5 @@ pub use fee::{
 pub use latency::{ConstantLatency, IntpOrderLatency, LatencyModel, OrderLatencyRow};
 pub use queue::{
     LogProbQueueFunc, LogProbQueueFunc2, PowerProbQueueFunc, PowerProbQueueFunc2,
-    PowerProbQueueFunc3, ProbQueueModel, Probability, QueueModel, QueuePos,
-    RiskAdverseQueueModel,
+    PowerProbQueueFunc3, ProbQueueModel, Probability, QueueModel, QueuePos, RiskAdverseQueueModel,
 };

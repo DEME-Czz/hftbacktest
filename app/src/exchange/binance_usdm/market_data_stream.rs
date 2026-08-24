@@ -18,13 +18,11 @@ use tracing::{debug, error, warn};
 
 use crate::{
     exchange::binance_usdm::{
-        BinanceFuturesError, lock_recover, now_ns,
-        SharedSymbolSet,
+        BinanceFuturesError, SharedSymbolSet,
         id::generate_random_id,
+        lock_recover, now_ns,
         protocol::{
-            parse_depth, parse_px_qty,
-            rest,
-            stream,
+            parse_depth, parse_px_qty, rest, stream,
             stream::{EventStream, Stream},
         },
         rest::BinanceFuturesClient,
@@ -109,34 +107,34 @@ impl MarketDataStream {
 
         for (px, qty) in bids {
             self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
-                    symbol: symbol.to_string(),
-                    event: Event {
-                        ev: LOCAL_BID_DEPTH_EVENT,
-                        exch_ts: transaction_time * 1_000_000,
-                        local_ts: now_ns(),
-                        order_id: 0,
-                        px,
-                        qty,
-                        ival: 0,
-                        fval: 0.0,
-                    },
-                }))?;
+                symbol: symbol.to_string(),
+                event: Event {
+                    ev: LOCAL_BID_DEPTH_EVENT,
+                    exch_ts: transaction_time * 1_000_000,
+                    local_ts: now_ns(),
+                    order_id: 0,
+                    px,
+                    qty,
+                    ival: 0,
+                    fval: 0.0,
+                },
+            }))?;
         }
 
         for (px, qty) in asks {
             self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
-                    symbol: symbol.to_string(),
-                    event: Event {
-                        ev: LOCAL_ASK_DEPTH_EVENT,
-                        exch_ts: transaction_time * 1_000_000,
-                        local_ts: now_ns(),
-                        order_id: 0,
-                        px,
-                        qty,
-                        ival: 0,
-                        fval: 0.0,
-                    },
-                }))?;
+                symbol: symbol.to_string(),
+                event: Event {
+                    ev: LOCAL_ASK_DEPTH_EVENT,
+                    exch_ts: transaction_time * 1_000_000,
+                    local_ts: now_ns(),
+                    order_id: 0,
+                    px,
+                    qty,
+                    ival: 0,
+                    fval: 0.0,
+                },
+            }))?;
         }
 
         self.publish(PublishEvent::BatchEnd)
@@ -164,7 +162,8 @@ impl MarketDataStream {
                     "Binance depth sequence gap detected; resynchronizing"
                 );
                 self.prev_u.remove(&symbol);
-                self.pending_depth_messages.insert(symbol.clone(), vec![data]);
+                self.pending_depth_messages
+                    .insert(symbol.clone(), vec![data]);
                 self.request_snapshot(symbol);
                 return Ok(());
             }
@@ -243,12 +242,7 @@ impl MarketDataStream {
                 fval: 0.0,
             },
         }))?;
-        self.emit_depth_levels(
-            &symbol,
-            data.transaction_time,
-            data.bids,
-            data.asks,
-        )?;
+        self.emit_depth_levels(&symbol, data.transaction_time, data.bids, data.asks)?;
 
         let mut previous_u = None;
         for event in pending.into_iter().skip(first_index) {
@@ -272,27 +266,30 @@ impl MarketDataStream {
                 match parse_px_qty(data.price, data.qty) {
                     Ok((px, qty)) => {
                         self.publish(PublishEvent::LiveEvent(LiveEvent::Feed {
-                                symbol: data.symbol,
-                                event: Event {
-                                    ev: if data.is_the_buyer_the_market_maker {
-                                        LOCAL_SELL_TRADE_EVENT
-                                    } else {
-                                        LOCAL_BUY_TRADE_EVENT
-                                    },
-                                    exch_ts: data.transaction_time * 1_000_000,
-                                    local_ts: now_ns(),
-                                    order_id: 0,
-                                    px,
-                                    qty,
-                                    ival: 0,
-                                    fval: 0.0,
+                            symbol: data.symbol,
+                            event: Event {
+                                ev: if data.is_the_buyer_the_market_maker {
+                                    LOCAL_SELL_TRADE_EVENT
+                                } else {
+                                    LOCAL_BUY_TRADE_EVENT
                                 },
-                            }))?;
+                                exch_ts: data.transaction_time * 1_000_000,
+                                local_ts: now_ns(),
+                                order_id: 0,
+                                px,
+                                qty,
+                                ival: 0,
+                                fval: 0.0,
+                            },
+                        }))?;
                     }
                     Err(error) => error!(?error, "failed to parse Binance trade stream"),
                 }
             }
-            other => warn!(?other, "ignoring private event received on public market stream"),
+            other => warn!(
+                ?other,
+                "ignoring private event received on public market stream"
+            ),
         }
         Ok(())
     }
@@ -305,14 +302,13 @@ impl MarketDataStream {
         let mut last_ping = Instant::now();
         let mut subscribed = HashSet::new();
 
-        let registered_symbols: Vec<_> = lock_recover(&self.symbols)
-            .iter()
-            .cloned()
-            .collect();
+        let registered_symbols: Vec<_> = lock_recover(&self.symbols).iter().cloned().collect();
         for symbol in registered_symbols {
             if subscribed.insert(symbol.clone()) {
                 let id = generate_random_id(16);
-                write.send(Message::Text(subscription_request(&symbol, &id).into())).await?;
+                write
+                    .send(Message::Text(subscription_request(&symbol, &id).into()))
+                    .await?;
             }
         }
 
@@ -367,11 +363,13 @@ impl MarketDataStream {
 }
 
 fn subscription_request(symbol: &str, id: &str) -> String {
-    format!(r#"{{
+    format!(
+        r#"{{
         "method":"SUBSCRIBE",
         "params":["{symbol}@trade","{symbol}@depth@100ms"],
         "id":"{id}"
-    }}"#)
+    }}"#
+    )
 }
 
 #[cfg(test)]
@@ -410,7 +408,10 @@ mod tests {
             )
         }));
 
-        assert!(result.is_ok(), "a closed event sink must not panic the stream task");
+        assert!(
+            result.is_ok(),
+            "a closed event sink must not panic the stream task"
+        );
         assert!(matches!(
             result.unwrap(),
             Err(crate::exchange::binance_usdm::BinanceFuturesError::PublishSinkClosed)
@@ -425,8 +426,7 @@ mod tests {
         let (event_tx, mut event_rx) = unbounded_channel();
         let (symbol_tx, _) = broadcast::channel(4);
         let symbols: SharedSymbolSet = Default::default();
-        let mut market =
-            MarketDataStream::new(client, event_tx, symbols, symbol_tx.subscribe());
+        let mut market = MarketDataStream::new(client, event_tx, symbols, symbol_tx.subscribe());
         market.pending_depth_messages.insert(
             "btcusdt".to_string(),
             vec![stream::Depth {
@@ -499,12 +499,7 @@ mod tests {
             symbols.insert("btcusdt".to_string());
             symbols.insert("ethusdt".to_string());
         }
-        let mut stream = MarketDataStream::new(
-            client,
-            event_tx,
-            symbols,
-            symbol_tx.subscribe(),
-        );
+        let mut stream = MarketDataStream::new(client, event_tx, symbols, symbol_tx.subscribe());
         symbol_tx.send("btcusdt".to_string()).unwrap();
 
         let url = format!("ws://{address}");

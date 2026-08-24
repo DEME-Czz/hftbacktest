@@ -9,7 +9,9 @@ pub struct SymbolOrderId {
 }
 
 impl SymbolOrderId {
-    pub fn new(symbol: String, order_id: OrderId) -> Self { Self { symbol, order_id } }
+    pub fn new(symbol: String, order_id: OrderId) -> Self {
+        Self { symbol, order_id }
+    }
 }
 
 #[derive(Eq, Hash, PartialEq, Debug)]
@@ -19,7 +21,9 @@ pub struct RefSymbolOrderId<'a> {
 }
 
 impl<'a> RefSymbolOrderId<'a> {
-    pub fn new(symbol: &'a str, order_id: OrderId) -> Self { Self { symbol, order_id } }
+    pub fn new(symbol: &'a str, order_id: OrderId) -> Self {
+        Self { symbol, order_id }
+    }
 }
 
 impl Equivalent<SymbolOrderId> for RefSymbolOrderId<'_> {

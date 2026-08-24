@@ -56,17 +56,12 @@ pub fn build_runtimes(configs: &[LiveStrategyConfig]) -> Result<StrategyRuntimes
         {
             bail!("tick_size and lot_size must be positive for {symbol}");
         }
-        let strategy = config
-            .build_strategy()
-            .map_err(|reason| anyhow::anyhow!("invalid strategy configuration for {symbol}: {reason}"))?;
+        let strategy = config.build_strategy().map_err(|reason| {
+            anyhow::anyhow!("invalid strategy configuration for {symbol}: {reason}")
+        })?;
         runtimes.insert(
             symbol.clone(),
-            LiveStrategyRuntime::new(
-                symbol,
-                config.tick_size,
-                config.lot_size,
-                strategy,
-            ),
+            LiveStrategyRuntime::new(symbol, config.tick_size, config.lot_size, strategy),
         );
     }
     Ok(runtimes)
@@ -80,12 +75,7 @@ pub struct LiveService<C> {
 }
 
 impl<C: LiveConnector> LiveService<C> {
-    pub fn new(
-        connector: C,
-        runtimes: StrategyRuntimes,
-        risk: RiskConfig,
-        mode: RunMode,
-    ) -> Self {
+    pub fn new(connector: C, runtimes: StrategyRuntimes, risk: RiskConfig, mode: RunMode) -> Self {
         Self {
             connector,
             runtimes,
@@ -218,7 +208,10 @@ impl<C: LiveConnector> LiveService<C> {
                 return;
             }
             if time::Instant::now() >= deadline {
-                warn!(remaining, "shutdown timed out before all order cancellations were confirmed");
+                warn!(
+                    remaining,
+                    "shutdown timed out before all order cancellations were confirmed"
+                );
                 return;
             }
             time::sleep(Duration::from_millis(50)).await;

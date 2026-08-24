@@ -97,11 +97,10 @@ impl<MD: MarketDepth> Strategy<MD> for GridStrategy {
         let bid_price = (forecast_mid_price * (1.0 - relative_bid_depth)).min(depth.best_bid());
         let ask_price = (forecast_mid_price * (1.0 + relative_ask_depth)).max(depth.best_ask());
 
-        let grid_interval = ((forecast_mid_price * self.config.relative_grid_interval
-            / min_grid_step)
-            .round()
-            * min_grid_step)
-            .max(min_grid_step);
+        let grid_interval =
+            ((forecast_mid_price * self.config.relative_grid_interval / min_grid_step).round()
+                * min_grid_step)
+                .max(min_grid_step);
         if !grid_interval.is_finite() || grid_interval <= 0.0 {
             return Vec::new();
         }
@@ -131,7 +130,9 @@ impl<MD: MarketDepth> Strategy<MD> for GridStrategy {
 
         for order in context.orders.values() {
             if order.cancellable() && !desired_ids.contains(&order.order_id) {
-                commands.push(StrategyCommand::Cancel { order_id: order.order_id });
+                commands.push(StrategyCommand::Cancel {
+                    order_id: order.order_id,
+                });
             }
         }
 

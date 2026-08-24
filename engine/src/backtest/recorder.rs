@@ -28,7 +28,11 @@ unsafe impl POD for Record {}
 
 impl NpyDTyped for Record {
     fn descr() -> Vec<Field> {
-        let endian = if cfg!(target_endian = "little") { "<" } else { ">" };
+        let endian = if cfg!(target_endian = "little") {
+            "<"
+        } else {
+            ">"
+        };
         [
             ("timestamp", "i8"),
             ("price", "f8"),

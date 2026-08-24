@@ -4,12 +4,11 @@ use hashbrown::HashMap;
 use hftbacktest::types::{Order, OrderId, Status};
 use tracing::error;
 
-use crate::{
-    exchange::binance_usdm::{
-        BinanceFuturesError, now_ns,
-        id::{RefSymbolOrderId, SymbolOrderId, generate_random_id},
-        protocol::{rest::OrderResponse, stream::OrderTradeUpdate},
-    },
+use crate::exchange::binance_usdm::{
+    BinanceFuturesError,
+    id::{RefSymbolOrderId, SymbolOrderId, generate_random_id},
+    now_ns,
+    protocol::{rest::OrderResponse, stream::OrderTradeUpdate},
 };
 
 #[derive(Debug)]
@@ -312,5 +311,4 @@ impl OrderManager {
             .map(|order| order.order.clone())
             .collect()
     }
-
 }

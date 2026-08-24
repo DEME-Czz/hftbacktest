@@ -51,7 +51,10 @@ impl ROIVectorMarketDepth {
     pub fn new(tick_size: f64, lot_size: f64, roi_lb: f64, roi_ub: f64) -> Self {
         let roi_lb = (roi_lb / tick_size).round() as i64;
         let roi_ub = (roi_ub / tick_size).round() as i64;
-        assert!(roi_lb <= roi_ub, "ROI lower bound must not exceed upper bound");
+        assert!(
+            roi_lb <= roi_ub,
+            "ROI lower bound must not exceed upper bound"
+        );
         let roi_range = (roi_ub + 1 - roi_lb) as usize;
         Self {
             tick_size,

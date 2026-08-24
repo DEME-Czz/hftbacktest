@@ -18,8 +18,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     exchange::binance_usdm::{
-        BinanceFuturesError, lock_recover,
-        SharedSymbolSet,
+        BinanceFuturesError, SharedSymbolSet, lock_recover,
         orders::SharedOrderManager,
         protocol::stream::{EventStream, Stream},
         rest::BinanceFuturesClient,
@@ -44,7 +43,13 @@ impl UserDataStream {
         symbols: SharedSymbolSet,
         symbol_rx: Receiver<String>,
     ) -> Self {
-        Self { symbols, client, ev_tx, order_manager, symbol_rx }
+        Self {
+            symbols,
+            client,
+            ev_tx,
+            order_manager,
+            symbol_rx,
+        }
     }
 
     pub async fn get_listen_key(&self) -> Result<String, BinanceFuturesError> {
@@ -59,11 +64,13 @@ impl UserDataStream {
             EventStream::ListenKeyExpired(_) => return Err(BinanceFuturesError::ListenKeyExpired),
             EventStream::AccountUpdate(data) => {
                 for position in data.account.position {
-                    let _ = self.ev_tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
-                        symbol: position.symbol,
-                        qty: position.position_amount,
-                        exch_ts: data.transaction_time * 1_000_000,
-                    }));
+                    let _ = self
+                        .ev_tx
+                        .send(PublishEvent::LiveEvent(LiveEvent::Position {
+                            symbol: position.symbol,
+                            qty: position.position_amount,
+                            exch_ts: data.transaction_time * 1_000_000,
+                        }));
                 }
             }
             EventStream::OrderTradeUpdate(data) => {
@@ -96,7 +103,9 @@ impl UserDataStream {
         let mut last_ping = Instant::now();
 
         tokio::spawn(async move {
-            if let Err(error) = get_position_information(client.clone(), symbols, ev_tx.clone()).await {
+            if let Err(error) =
+                get_position_information(client.clone(), symbols, ev_tx.clone()).await
+            {
                 error!(?error, "couldn't get initial position information");
             }
         });

@@ -31,8 +31,14 @@ pub enum StrategyCommand {
         time_in_force: TimeInForce,
         order_type: OrdType,
     },
-    Modify { order_id: OrderId, price: f64, qty: f64 },
-    Cancel { order_id: OrderId },
+    Modify {
+        order_id: OrderId,
+        price: f64,
+        qty: f64,
+    },
+    Cancel {
+        order_id: OrderId,
+    },
 }
 
 /// A strategy is a pure decision component: market/account state in, commands out.
@@ -43,11 +49,7 @@ pub trait Strategy<MD: MarketDepth> {
 }
 
 /// Executes one strategy decision using the same `Bot` semantics used by backtesting.
-pub fn run_once<MD, B, S>(
-    bot: &mut B,
-    strategy: &mut S,
-    asset_no: usize,
-) -> Result<(), B::Error>
+pub fn run_once<MD, B, S>(bot: &mut B, strategy: &mut S, asset_no: usize) -> Result<(), B::Error>
 where
     MD: MarketDepth,
     B: Bot<MD>,
@@ -66,14 +68,32 @@ where
 
     for command in commands {
         match command {
-            StrategyCommand::Submit { order_id, price, qty, side, time_in_force, order_type } => {
+            StrategyCommand::Submit {
+                order_id,
+                price,
+                qty,
+                side,
+                time_in_force,
+                order_type,
+            } => {
                 let _ = bot.submit_order(
                     asset_no,
-                    OrderRequest { order_id, price, qty, side, time_in_force, order_type },
+                    OrderRequest {
+                        order_id,
+                        price,
+                        qty,
+                        side,
+                        time_in_force,
+                        order_type,
+                    },
                     false,
                 )?;
             }
-            StrategyCommand::Modify { order_id, price, qty } => {
+            StrategyCommand::Modify {
+                order_id,
+                price,
+                qty,
+            } => {
                 let _ = bot.modify(asset_no, order_id, price, qty, false)?;
             }
             StrategyCommand::Cancel { order_id } => {

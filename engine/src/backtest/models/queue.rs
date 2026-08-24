@@ -19,13 +19,19 @@ where
 pub struct RiskAdverseQueueModel<MD>(PhantomData<MD>);
 
 impl AnyClone for f64 {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 impl<MD> RiskAdverseQueueModel<MD> {
     #[allow(clippy::new_without_default)]
-    pub fn new() -> Self { Self(PhantomData) }
+    pub fn new() -> Self {
+        Self(PhantomData)
+    }
 }
 
 impl<MD> QueueModel<MD> for RiskAdverseQueueModel<MD>
@@ -69,8 +75,12 @@ pub struct QueuePos {
 }
 
 impl AnyClone for QueuePos {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 pub trait Probability {
@@ -90,7 +100,10 @@ where
     P: Probability,
 {
     pub fn new(prob: P) -> Self {
-        Self { prob, _md_marker: PhantomData }
+        Self {
+            prob,
+            _md_marker: PhantomData,
+        }
     }
 }
 
@@ -125,11 +138,15 @@ where
             q.front_q_qty = q.front_q_qty.min(new_qty);
             return;
         }
-        if chg.is_nan() { chg = 0.0; }
+        if chg.is_nan() {
+            chg = 0.0;
+        }
         let front = q.front_q_qty;
         let back = prev_qty - front;
         let mut prob = self.prob.prob(front, back);
-        if prob.is_infinite() { prob = 1.0; }
+        if prob.is_infinite() {
+            prob = 1.0;
+        }
         let est_front = front - (1.0 - prob) * chg + (back - prob * chg).min(0.0);
         q.front_q_qty = est_front.min(new_qty);
     }
@@ -146,10 +163,16 @@ where
     }
 }
 
-pub struct PowerProbQueueFunc { n: f64 }
+pub struct PowerProbQueueFunc {
+    n: f64,
+}
 impl PowerProbQueueFunc {
-    pub fn new(n: f64) -> Self { Self { n } }
-    fn f(&self, x: f64) -> f64 { x.powf(self.n) }
+    pub fn new(n: f64) -> Self {
+        Self { n }
+    }
+    fn f(&self, x: f64) -> f64 {
+        x.powf(self.n)
+    }
 }
 impl Probability for PowerProbQueueFunc {
     fn prob(&self, front: f64, back: f64) -> f64 {
@@ -160,8 +183,12 @@ impl Probability for PowerProbQueueFunc {
 #[derive(Default)]
 pub struct LogProbQueueFunc(());
 impl LogProbQueueFunc {
-    pub fn new() -> Self { Self::default() }
-    fn f(&self, x: f64) -> f64 { (1.0 + x).ln() }
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn f(&self, x: f64) -> f64 {
+        (1.0 + x).ln()
+    }
 }
 impl Probability for LogProbQueueFunc {
     fn prob(&self, front: f64, back: f64) -> f64 {
@@ -172,26 +199,46 @@ impl Probability for LogProbQueueFunc {
 #[derive(Default)]
 pub struct LogProbQueueFunc2(());
 impl LogProbQueueFunc2 {
-    pub fn new() -> Self { Self::default() }
-    fn f(&self, x: f64) -> f64 { (1.0 + x).ln() }
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn f(&self, x: f64) -> f64 {
+        (1.0 + x).ln()
+    }
 }
 impl Probability for LogProbQueueFunc2 {
-    fn prob(&self, front: f64, back: f64) -> f64 { self.f(back) / self.f(back + front) }
+    fn prob(&self, front: f64, back: f64) -> f64 {
+        self.f(back) / self.f(back + front)
+    }
 }
 
-pub struct PowerProbQueueFunc2 { n: f64 }
+pub struct PowerProbQueueFunc2 {
+    n: f64,
+}
 impl PowerProbQueueFunc2 {
-    pub fn new(n: f64) -> Self { Self { n } }
-    fn f(&self, x: f64) -> f64 { x.powf(self.n) }
+    pub fn new(n: f64) -> Self {
+        Self { n }
+    }
+    fn f(&self, x: f64) -> f64 {
+        x.powf(self.n)
+    }
 }
 impl Probability for PowerProbQueueFunc2 {
-    fn prob(&self, front: f64, back: f64) -> f64 { self.f(back) / self.f(back + front) }
+    fn prob(&self, front: f64, back: f64) -> f64 {
+        self.f(back) / self.f(back + front)
+    }
 }
 
-pub struct PowerProbQueueFunc3 { n: f64 }
+pub struct PowerProbQueueFunc3 {
+    n: f64,
+}
 impl PowerProbQueueFunc3 {
-    pub fn new(n: f64) -> Self { Self { n } }
-    fn f(&self, x: f64) -> f64 { x.powf(self.n) }
+    pub fn new(n: f64) -> Self {
+        Self { n }
+    }
+    fn f(&self, x: f64) -> f64 {
+        x.powf(self.n)
+    }
 }
 impl Probability for PowerProbQueueFunc3 {
     fn prob(&self, front: f64, back: f64) -> f64 {

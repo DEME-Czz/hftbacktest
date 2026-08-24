@@ -5,9 +5,7 @@ use clap::Parser;
 use hft_app::{
     config::AppConfig,
     exchange::binance_usdm::BinanceFutures,
-    live::{
-        service::{LiveService, build_runtimes},
-    },
+    live::service::{LiveService, build_runtimes},
     ports::RunMode,
 };
 

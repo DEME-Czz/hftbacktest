@@ -112,7 +112,10 @@ impl std::fmt::Debug for BinanceConfig {
             .field("private_stream_url", &self.private_stream_url)
             .field("api_url", &self.api_url)
             .field("order_prefix", &self.order_prefix)
-            .field("credentials_configured", &(!self.api_key.is_empty() && !self.secret.is_empty()))
+            .field(
+                "credentials_configured",
+                &(!self.api_key.is_empty() && !self.secret.is_empty()),
+            )
             .finish()
     }
 }
@@ -150,12 +153,8 @@ impl BinanceFutures {
 
         // Construct the stream before spawning so register() always observes at least one
         // broadcast receiver. Reconnect reuses the same receiver and stream state.
-        let mut stream = market_data_stream::MarketDataStream::new(
-            client,
-            ev_tx.clone(),
-            symbols,
-            symbol_rx,
-        );
+        let mut stream =
+            market_data_stream::MarketDataStream::new(client, ev_tx.clone(), symbols, symbol_rx);
 
         tokio::spawn(async move {
             let mut backoff = ExponentialBackoff::default();
@@ -216,7 +215,6 @@ impl BinanceFutures {
                 .await;
         });
     }
-
 }
 
 impl MarketDataSource for BinanceFutures {
@@ -246,8 +244,8 @@ impl ExecutionVenue for BinanceFutures {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         tokio::spawn(async move {
-            let client_order_id = lock_recover(&order_manager)
-                .prepare_client_order_id(symbol.clone(), order.clone());
+            let client_order_id =
+                lock_recover(&order_manager).prepare_client_order_id(symbol.clone(), order.clone());
 
             match client_order_id {
                 Some(client_order_id) => {
@@ -309,13 +307,11 @@ impl ExecutionVenue for BinanceFutures {
             if let Some(client_order_id) = client_order_id {
                 match client.cancel_order(&client_order_id, &symbol).await {
                     Ok(resp) => {
-                        if let Some(order) = lock_recover(&order_manager)
-                            .update_from_rest(&client_order_id, &resp)
+                        if let Some(order) =
+                            lock_recover(&order_manager).update_from_rest(&client_order_id, &resp)
                         {
-                            let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                symbol,
-                                order,
-                            }));
+                            let _ = tx
+                                .send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
                         }
                     }
                     Err(error) => {

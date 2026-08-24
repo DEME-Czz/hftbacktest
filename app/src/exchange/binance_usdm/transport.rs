@@ -140,11 +140,18 @@ where
     ErrorHandler: FnMut(E) -> Result<(), E>,
 {
     pub fn new(backoff: Backoff) -> Self {
-        Self { backoff, error_handler: None, _marker: PhantomData }
+        Self {
+            backoff,
+            error_handler: None,
+            _marker: PhantomData,
+        }
     }
 
     pub fn error_handler(self, error_handler: ErrorHandler) -> Self {
-        Self { error_handler: Some(error_handler), ..self }
+        Self {
+            error_handler: Some(error_handler),
+            ..self
+        }
     }
 
     pub async fn retry<F, Fut>(&mut self, func: F) -> Result<O, E>

@@ -13,10 +13,18 @@ pub struct RiskConfig {
     pub max_open_orders: usize,
 }
 
-fn default_max_order_qty() -> f64 { 0.001 }
-fn default_max_order_notional() -> f64 { 100.0 }
-fn default_max_position() -> f64 { 0.003 }
-fn default_max_open_orders() -> usize { 6 }
+fn default_max_order_qty() -> f64 {
+    0.001
+}
+fn default_max_order_notional() -> f64 {
+    100.0
+}
+fn default_max_position() -> f64 {
+    0.003
+}
+fn default_max_open_orders() -> usize {
+    6
+}
 
 impl Default for RiskConfig {
     fn default() -> Self {
@@ -51,7 +59,9 @@ pub struct RiskGate {
 }
 
 impl RiskGate {
-    pub fn new(config: RiskConfig) -> Self { Self { config } }
+    pub fn new(config: RiskConfig) -> Self {
+        Self { config }
+    }
 
     pub fn allow(
         &self,
@@ -61,7 +71,9 @@ impl RiskGate {
         same_side_order_exposure: f64,
     ) -> Result<(), &'static str> {
         match command {
-            StrategyCommand::Submit { price, qty, side, .. } => {
+            StrategyCommand::Submit {
+                price, qty, side, ..
+            } => {
                 if !price.is_finite() || *price <= 0.0 || !qty.is_finite() || *qty <= 0.0 {
                     return Err("invalid order price or quantity");
                 }
@@ -91,7 +103,8 @@ impl RiskGate {
                 if !price.is_finite() || *price <= 0.0 || !qty.is_finite() || *qty <= 0.0 {
                     return Err("invalid modify price or quantity");
                 }
-                if *qty > self.config.max_order_qty || price * qty > self.config.max_order_notional {
+                if *qty > self.config.max_order_qty || price * qty > self.config.max_order_notional
+                {
                     return Err("modify risk limit exceeded");
                 }
                 Ok(())

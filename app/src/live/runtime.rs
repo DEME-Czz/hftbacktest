@@ -40,18 +40,22 @@ where
         }
     }
 
-    pub fn symbol(&self) -> &str { &self.symbol }
+    pub fn symbol(&self) -> &str {
+        &self.symbol
+    }
 
     pub fn apply(&mut self, live: &LiveEvent) -> bool {
         match live {
             LiveEvent::Feed { symbol, event } if symbol == &self.symbol => {
                 self.timestamp = event.local_ts;
                 if event.is(DEPTH_EVENT | BUY_EVENT) {
-                    self.depth.update_bid_depth(event.px, event.qty, event.local_ts);
+                    self.depth
+                        .update_bid_depth(event.px, event.qty, event.local_ts);
                     self.depth_dirty = true;
                     false
                 } else if event.is(DEPTH_EVENT | SELL_EVENT) {
-                    self.depth.update_ask_depth(event.px, event.qty, event.local_ts);
+                    self.depth
+                        .update_ask_depth(event.px, event.qty, event.local_ts);
                     self.depth_dirty = true;
                     false
                 } else if event.is(DEPTH_CLEAR_EVENT) {
@@ -76,7 +80,11 @@ where
                 }
                 true
             }
-            LiveEvent::Position { symbol, qty, exch_ts } if symbol == &self.symbol => {
+            LiveEvent::Position {
+                symbol,
+                qty,
+                exch_ts,
+            } if symbol == &self.symbol => {
                 self.position = *qty;
                 self.timestamp = *exch_ts;
                 true
@@ -148,9 +156,15 @@ where
         Some(order.clone())
     }
 
-    pub fn depth(&self) -> &HashMapMarketDepth { &self.depth }
-    pub fn position(&self) -> f64 { self.position }
-    pub fn open_orders(&self) -> usize { self.orders.len() }
+    pub fn depth(&self) -> &HashMapMarketDepth {
+        &self.depth
+    }
+    pub fn position(&self) -> f64 {
+        self.position
+    }
+    pub fn open_orders(&self) -> usize {
+        self.orders.len()
+    }
     pub fn active_order_exposure(&self, side: Side) -> f64 {
         self.orders
             .values()

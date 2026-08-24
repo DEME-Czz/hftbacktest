@@ -14,7 +14,15 @@ fn l2_queue_fill_golden() {
     assert_eq!(depth.best_ask(), 101.0);
 
     let model = RiskAdverseQueueModel::<HashMapMarketDepth>::new();
-    let mut order = Order::new(1, 100, 1.0, 1.0, Side::Buy, OrdType::Limit, TimeInForce::GTC);
+    let mut order = Order::new(
+        1,
+        100,
+        1.0,
+        1.0,
+        Side::Buy,
+        OrdType::Limit,
+        TimeInForce::GTC,
+    );
     model.new_order(&mut order, &depth);
     model.trade(&mut order, 11.0, &depth);
 

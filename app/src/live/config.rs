@@ -1,6 +1,6 @@
+use super::risk::RiskConfig;
 use hftbacktest::strategy::{BuiltinStrategy, BuiltinStrategyConfig, GridConfig};
 use serde::Deserialize;
-use super::risk::RiskConfig;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RuntimeConfig {

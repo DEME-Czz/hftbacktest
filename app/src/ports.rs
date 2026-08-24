@@ -9,11 +9,7 @@ pub enum RunMode {
 
 impl RunMode {
     pub fn from_execute(execute: bool) -> Self {
-        if execute {
-            Self::Execute
-        } else {
-            Self::DryRun
-        }
+        if execute { Self::Execute } else { Self::DryRun }
     }
 
     pub fn allows_trading(self) -> bool {

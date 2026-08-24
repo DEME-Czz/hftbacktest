@@ -3,11 +3,7 @@ use std::net::IpAddr;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::{
-    exchange::binance_usdm::BinanceConfig,
-    live::config::RuntimeConfig,
-    ports::RunMode,
-};
+use crate::{exchange::binance_usdm::BinanceConfig, live::config::RuntimeConfig, ports::RunMode};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct AppConfig {
@@ -71,10 +67,7 @@ impl AppConfig {
                 .exchange
                 .private_stream_url
                 .replace("{listen_key}", "configured-listen-key");
-            if !self
-                .exchange
-                .private_stream_url
-                .contains("{listen_key}")
+            if !self.exchange.private_stream_url.contains("{listen_key}")
                 || !valid_transport(&private_url, "wss", "ws")
             {
                 return Err(ConfigError::InvalidPrivateStream);

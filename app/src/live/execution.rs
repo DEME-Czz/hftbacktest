@@ -15,7 +15,9 @@ pub struct LiveExecutor {
 }
 
 impl LiveExecutor {
-    pub fn new(execute: bool, risk: RiskGate) -> Self { Self { execute, risk } }
+    pub fn new(execute: bool, risk: RiskGate) -> Self {
+        Self { execute, risk }
+    }
 
     pub fn execute<C: ExecutionVenue>(
         &self,
@@ -35,12 +37,21 @@ impl LiveExecutor {
                 runtime.open_orders(),
                 same_side_order_exposure,
             ) {
-                warn!(symbol = runtime.symbol(), ?command, reason, "strategy command rejected by risk gate");
+                warn!(
+                    symbol = runtime.symbol(),
+                    ?command,
+                    reason,
+                    "strategy command rejected by risk gate"
+                );
                 continue;
             }
 
             if !self.execute {
-                debug!(symbol = runtime.symbol(), ?command, "strategy command generated (dry-run)");
+                debug!(
+                    symbol = runtime.symbol(),
+                    ?command,
+                    "strategy command generated (dry-run)"
+                );
                 continue;
             }
 
@@ -54,17 +65,14 @@ impl LiveExecutor {
                     order_type,
                 } => {
                     if !matches!(side, Side::Buy | Side::Sell) {
-                        warn!(symbol = runtime.symbol(), order_id, "unsupported order side");
+                        warn!(
+                            symbol = runtime.symbol(),
+                            order_id, "unsupported order side"
+                        );
                         continue;
                     }
-                    let order = runtime.stage_submit(
-                        order_id,
-                        price,
-                        qty,
-                        side,
-                        time_in_force,
-                        order_type,
-                    );
+                    let order =
+                        runtime.stage_submit(order_id, price, qty, side, time_in_force, order_type);
                     connector.submit(runtime.symbol().to_string(), order, tx.clone());
                 }
                 StrategyCommand::Cancel { order_id } => {
@@ -73,7 +81,10 @@ impl LiveExecutor {
                     }
                 }
                 StrategyCommand::Modify { order_id, .. } => {
-                    warn!(symbol = runtime.symbol(), order_id, "live modify is not implemented; command rejected");
+                    warn!(
+                        symbol = runtime.symbol(),
+                        order_id, "live modify is not implemented; command rejected"
+                    );
                 }
             }
         }
@@ -87,8 +98,8 @@ mod tests {
     use hftbacktest::{
         strategy::{BuiltinStrategy, BuiltinStrategyConfig, GridConfig, StrategyCommand},
         types::{
-            Event, LiveEvent, OrdType, Order, Side, TimeInForce, LOCAL_ASK_DEPTH_EVENT,
-            LOCAL_BID_DEPTH_EVENT,
+            Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT, LiveEvent, OrdType, Order, Side,
+            TimeInForce,
         },
     };
     use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -110,7 +121,9 @@ mod tests {
 
     impl ExecutionVenue for FakeConnector {
         fn start_account_stream(&self, _tx: UnboundedSender<PublishEvent>) {}
-        fn open_orders(&self, _symbol: &str) -> Vec<Order> { Vec::new() }
+        fn open_orders(&self, _symbol: &str) -> Vec<Order> {
+            Vec::new()
+        }
         fn submit(&self, symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
             self.submitted.lock().unwrap().push((symbol, order));
         }
@@ -210,14 +223,7 @@ mod tests {
             }),
         );
         let mut runtime = runtime();
-        runtime.stage_submit(
-            1,
-            99.0,
-            0.0025,
-            Side::Buy,
-            TimeInForce::GTX,
-            OrdType::Limit,
-        );
+        runtime.stage_submit(1, 99.0, 0.0025, Side::Buy, TimeInForce::GTX, OrdType::Limit);
 
         executor.execute(
             &connector,

@@ -30,7 +30,9 @@ pub enum Value {
 }
 
 impl From<anyhow::Error> for Value {
-    fn from(value: anyhow::Error) -> Self { Self::String(value.to_string()) }
+    fn from(value: anyhow::Error) -> Self {
+        Self::String(value.to_string())
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Decode, Encode)]
@@ -48,18 +50,37 @@ pub struct LiveError {
 }
 
 impl LiveError {
-    pub fn new(kind: ErrorKind) -> Self { Self { kind, value: Value::Empty } }
-    pub fn with(kind: ErrorKind, value: Value) -> Self { Self { kind, value } }
-    pub fn value(&self) -> &Value { &self.value }
+    pub fn new(kind: ErrorKind) -> Self {
+        Self {
+            kind,
+            value: Value::Empty,
+        }
+    }
+    pub fn with(kind: ErrorKind, value: Value) -> Self {
+        Self { kind, value }
+    }
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
 }
 
 #[derive(Clone, Debug, Decode, Encode)]
 pub enum LiveEvent {
     BatchStart,
     BatchEnd,
-    Feed { symbol: String, event: Event },
-    Order { symbol: String, order: Order },
-    Position { symbol: String, qty: f64, exch_ts: i64 },
+    Feed {
+        symbol: String,
+        event: Event,
+    },
+    Order {
+        symbol: String,
+        order: Order,
+    },
+    Position {
+        symbol: String,
+        qty: f64,
+        exch_ts: i64,
+    },
     Error(LiveError),
 }
 
@@ -142,7 +163,11 @@ unsafe impl POD for Event {}
 
 impl NpyDTyped for Event {
     fn descr() -> Vec<Field> {
-        let endian = if cfg!(target_endian = "little") { "<" } else { ">" };
+        let endian = if cfg!(target_endian = "little") {
+            "<"
+        } else {
+            ">"
+        };
         [
             ("ev", "u8"),
             ("exch_ts", "i8"),
@@ -154,7 +179,10 @@ impl NpyDTyped for Event {
             ("fval", "f8"),
         ]
         .into_iter()
-        .map(|(name, ty)| Field { name: name.to_string(), ty: format!("{endian}{ty}") })
+        .map(|(name, ty)| Field {
+            name: name.to_string(),
+            ty: format!("{endian}{ty}"),
+        })
         .collect()
     }
 }
@@ -172,32 +200,61 @@ impl Event {
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Decode, Encode)]
 #[repr(i8)]
-pub enum Side { Buy = 1, Sell = -1, None = 0, Unsupported = 127 }
+pub enum Side {
+    Buy = 1,
+    Sell = -1,
+    None = 0,
+    Unsupported = 127,
+}
 impl AsRef<f64> for Side {
     fn as_ref(&self) -> &f64 {
-        match self { Self::Buy => &1.0, Self::Sell => &-1.0, _ => panic!("unsupported side") }
+        match self {
+            Self::Buy => &1.0,
+            Self::Sell => &-1.0,
+            _ => panic!("unsupported side"),
+        }
     }
 }
 impl AsRef<str> for Side {
     fn as_ref(&self) -> &'static str {
-        match self { Self::Buy => "BUY", Self::Sell => "SELL", _ => panic!("unsupported side") }
+        match self {
+            Self::Buy => "BUY",
+            Self::Sell => "SELL",
+            _ => panic!("unsupported side"),
+        }
     }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Decode, Encode)]
 #[repr(u8)]
 pub enum Status {
-    None = 0, New = 1, Expired = 2, Filled = 3, Canceled = 4,
-    PartiallyFilled = 5, Rejected = 6, Replaced = 7, Unsupported = 255,
+    None = 0,
+    New = 1,
+    Expired = 2,
+    Filled = 3,
+    Canceled = 4,
+    PartiallyFilled = 5,
+    Rejected = 6,
+    Replaced = 7,
+    Unsupported = 255,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Decode, Encode)]
 #[repr(u8)]
-pub enum TimeInForce { GTC = 0, GTX = 1, FOK = 2, IOC = 3, Unsupported = 255 }
+pub enum TimeInForce {
+    GTC = 0,
+    GTX = 1,
+    FOK = 2,
+    IOC = 3,
+    Unsupported = 255,
+}
 impl AsRef<str> for TimeInForce {
     fn as_ref(&self) -> &'static str {
         match self {
-            Self::GTC => "GTC", Self::GTX => "GTX", Self::FOK => "FOK", Self::IOC => "IOC",
+            Self::GTC => "GTC",
+            Self::GTX => "GTX",
+            Self::FOK => "FOK",
+            Self::IOC => "IOC",
             Self::Unsupported => panic!("unsupported time in force"),
         }
     }
@@ -205,10 +262,18 @@ impl AsRef<str> for TimeInForce {
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Decode, Encode)]
 #[repr(u8)]
-pub enum OrdType { Limit = 0, Market = 1, Unsupported = 255 }
+pub enum OrdType {
+    Limit = 0,
+    Market = 1,
+    Unsupported = 255,
+}
 impl AsRef<str> for OrdType {
     fn as_ref(&self) -> &'static str {
-        match self { Self::Limit => "LIMIT", Self::Market => "MARKET", Self::Unsupported => panic!("unsupported order type") }
+        match self {
+            Self::Limit => "LIMIT",
+            Self::Market => "MARKET",
+            Self::Unsupported => panic!("unsupported order type"),
+        }
     }
 }
 
@@ -218,8 +283,12 @@ pub trait AnyClone: DynClone {
 }
 dyn_clone::clone_trait_object!(AnyClone);
 impl AnyClone for () {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -254,18 +323,39 @@ impl Order {
         time_in_force: TimeInForce,
     ) -> Self {
         Self {
-            qty, leaves_qty: qty, exec_qty: 0.0, exec_price_tick: 0, price_tick, tick_size,
-            exch_timestamp: 0, local_timestamp: 0, order_id, q: Box::new(()), maker: false,
-            order_type, req: Status::None, status: Status::None, side, time_in_force,
+            qty,
+            leaves_qty: qty,
+            exec_qty: 0.0,
+            exec_price_tick: 0,
+            price_tick,
+            tick_size,
+            exch_timestamp: 0,
+            local_timestamp: 0,
+            order_id,
+            q: Box::new(()),
+            maker: false,
+            order_type,
+            req: Status::None,
+            status: Status::None,
+            side,
+            time_in_force,
         }
     }
-    pub fn price(&self) -> f64 { self.price_tick as f64 * self.tick_size }
-    pub fn exec_price(&self) -> f64 { self.exec_price_tick as f64 * self.tick_size }
+    pub fn price(&self) -> f64 {
+        self.price_tick as f64 * self.tick_size
+    }
+    pub fn exec_price(&self) -> f64 {
+        self.exec_price_tick as f64 * self.tick_size
+    }
     pub fn cancellable(&self) -> bool {
         matches!(self.status, Status::New | Status::PartiallyFilled) && self.req == Status::None
     }
-    pub fn active(&self) -> bool { matches!(self.status, Status::New | Status::PartiallyFilled) }
-    pub fn pending(&self) -> bool { self.req != Status::None }
+    pub fn active(&self) -> bool {
+        matches!(self.status, Status::New | Status::PartiallyFilled)
+    }
+    pub fn pending(&self) -> bool {
+        self.req != Status::None
+    }
     pub fn update(&mut self, order: &Order) {
         self.qty = order.qty;
         self.leaves_qty = order.leaves_qty;
@@ -273,7 +363,9 @@ impl Order {
         self.tick_size = order.tick_size;
         self.side = order.side;
         self.time_in_force = order.time_in_force;
-        if order.exch_timestamp > 0 { self.exch_timestamp = order.exch_timestamp; }
+        if order.exch_timestamp > 0 {
+            self.exch_timestamp = order.exch_timestamp;
+        }
         self.status = order.status;
         self.req = order.req;
         self.exec_price_tick = order.exec_price_tick;
@@ -288,21 +380,37 @@ impl Order {
 impl Debug for Order {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Order")
-            .field("order_id", &self.order_id).field("side", &self.side)
-            .field("qty", &self.qty).field("leaves_qty", &self.leaves_qty)
-            .field("price_tick", &self.price_tick).field("status", &self.status)
-            .field("req", &self.req).field("maker", &self.maker).finish()
+            .field("order_id", &self.order_id)
+            .field("side", &self.side)
+            .field("qty", &self.qty)
+            .field("leaves_qty", &self.leaves_qty)
+            .field("price_tick", &self.price_tick)
+            .field("status", &self.status)
+            .field("req", &self.req)
+            .field("maker", &self.maker)
+            .finish()
     }
 }
 
 impl<Context> Decode<Context> for Order {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
         Ok(Self {
-            qty: Decode::decode(decoder)?, leaves_qty: Decode::decode(decoder)?, exec_qty: Decode::decode(decoder)?,
-            exec_price_tick: Decode::decode(decoder)?, price_tick: Decode::decode(decoder)?, tick_size: Decode::decode(decoder)?,
-            exch_timestamp: Decode::decode(decoder)?, local_timestamp: Decode::decode(decoder)?, order_id: Decode::decode(decoder)?,
-            q: Box::new(()), maker: Decode::decode(decoder)?, order_type: Decode::decode(decoder)?, req: Decode::decode(decoder)?,
-            status: Decode::decode(decoder)?, side: Decode::decode(decoder)?, time_in_force: Decode::decode(decoder)?,
+            qty: Decode::decode(decoder)?,
+            leaves_qty: Decode::decode(decoder)?,
+            exec_qty: Decode::decode(decoder)?,
+            exec_price_tick: Decode::decode(decoder)?,
+            price_tick: Decode::decode(decoder)?,
+            tick_size: Decode::decode(decoder)?,
+            exch_timestamp: Decode::decode(decoder)?,
+            local_timestamp: Decode::decode(decoder)?,
+            order_id: Decode::decode(decoder)?,
+            q: Box::new(()),
+            maker: Decode::decode(decoder)?,
+            order_type: Decode::decode(decoder)?,
+            req: Decode::decode(decoder)?,
+            status: Decode::decode(decoder)?,
+            side: Decode::decode(decoder)?,
+            time_in_force: Decode::decode(decoder)?,
         })
     }
 }
@@ -313,11 +421,21 @@ impl<'de, Context> BorrowDecode<'de, Context> for Order {
 }
 impl Encode for Order {
     fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
-        self.qty.encode(encoder)?; self.leaves_qty.encode(encoder)?; self.exec_qty.encode(encoder)?;
-        self.exec_price_tick.encode(encoder)?; self.price_tick.encode(encoder)?; self.tick_size.encode(encoder)?;
-        self.exch_timestamp.encode(encoder)?; self.local_timestamp.encode(encoder)?; self.order_id.encode(encoder)?;
-        self.maker.encode(encoder)?; self.order_type.encode(encoder)?; self.req.encode(encoder)?;
-        self.status.encode(encoder)?; self.side.encode(encoder)?; self.time_in_force.encode(encoder)?;
+        self.qty.encode(encoder)?;
+        self.leaves_qty.encode(encoder)?;
+        self.exec_qty.encode(encoder)?;
+        self.exec_price_tick.encode(encoder)?;
+        self.price_tick.encode(encoder)?;
+        self.tick_size.encode(encoder)?;
+        self.exch_timestamp.encode(encoder)?;
+        self.local_timestamp.encode(encoder)?;
+        self.order_id.encode(encoder)?;
+        self.maker.encode(encoder)?;
+        self.order_type.encode(encoder)?;
+        self.req.encode(encoder)?;
+        self.status.encode(encoder)?;
+        self.side.encode(encoder)?;
+        self.time_in_force.encode(encoder)?;
         Ok(())
     }
 }
@@ -368,20 +486,58 @@ where
     fn orders(&self, asset_no: usize) -> &HashMap<OrderId, Order>;
     #[allow(clippy::too_many_arguments)]
     fn submit_buy_order(
-        &mut self, asset_no: usize, order_id: OrderId, price: f64, qty: f64,
-        time_in_force: TimeInForce, order_type: OrdType, wait: bool,
+        &mut self,
+        asset_no: usize,
+        order_id: OrderId,
+        price: f64,
+        qty: f64,
+        time_in_force: TimeInForce,
+        order_type: OrdType,
+        wait: bool,
     ) -> Result<ElapseResult, Self::Error>;
     #[allow(clippy::too_many_arguments)]
     fn submit_sell_order(
-        &mut self, asset_no: usize, order_id: OrderId, price: f64, qty: f64,
-        time_in_force: TimeInForce, order_type: OrdType, wait: bool,
+        &mut self,
+        asset_no: usize,
+        order_id: OrderId,
+        price: f64,
+        qty: f64,
+        time_in_force: TimeInForce,
+        order_type: OrdType,
+        wait: bool,
     ) -> Result<ElapseResult, Self::Error>;
-    fn submit_order(&mut self, asset_no: usize, order: OrderRequest, wait: bool) -> Result<ElapseResult, Self::Error>;
-    fn modify(&mut self, asset_no: usize, order_id: OrderId, price: f64, qty: f64, wait: bool) -> Result<ElapseResult, Self::Error>;
-    fn cancel(&mut self, asset_no: usize, order_id: OrderId, wait: bool) -> Result<ElapseResult, Self::Error>;
+    fn submit_order(
+        &mut self,
+        asset_no: usize,
+        order: OrderRequest,
+        wait: bool,
+    ) -> Result<ElapseResult, Self::Error>;
+    fn modify(
+        &mut self,
+        asset_no: usize,
+        order_id: OrderId,
+        price: f64,
+        qty: f64,
+        wait: bool,
+    ) -> Result<ElapseResult, Self::Error>;
+    fn cancel(
+        &mut self,
+        asset_no: usize,
+        order_id: OrderId,
+        wait: bool,
+    ) -> Result<ElapseResult, Self::Error>;
     fn clear_inactive_orders(&mut self, asset_no: Option<usize>);
-    fn wait_order_response(&mut self, asset_no: usize, order_id: OrderId, timeout: i64) -> Result<ElapseResult, Self::Error>;
-    fn wait_next_feed(&mut self, include_order_resp: bool, timeout: i64) -> Result<ElapseResult, Self::Error>;
+    fn wait_order_response(
+        &mut self,
+        asset_no: usize,
+        order_id: OrderId,
+        timeout: i64,
+    ) -> Result<ElapseResult, Self::Error>;
+    fn wait_next_feed(
+        &mut self,
+        include_order_resp: bool,
+        timeout: i64,
+    ) -> Result<ElapseResult, Self::Error>;
     fn elapse(&mut self, duration: i64) -> Result<ElapseResult, Self::Error>;
     fn elapse_bt(&mut self, duration: i64) -> Result<ElapseResult, Self::Error>;
     fn close(&mut self) -> Result<(), Self::Error>;
@@ -392,8 +548,15 @@ where
 pub trait Recorder {
     type Error;
     fn record<MD, I>(&mut self, hbt: &I) -> Result<(), Self::Error>
-    where I: Bot<MD>, MD: MarketDepth;
+    where
+        I: Bot<MD>,
+        MD: MarketDepth;
 }
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
-pub enum ElapseResult { Ok, EndOfData, MarketFeed, OrderResponse }
+pub enum ElapseResult {
+    Ok,
+    EndOfData,
+    MarketFeed,
+    OrderResponse,
+}

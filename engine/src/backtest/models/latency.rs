@@ -2,8 +2,8 @@ use std::{io::Error as IoError, mem};
 
 use crate::{
     backtest::{
-        data::{Data, DataPreprocess, DataSource, Field, NpyDTyped, POD, Reader},
         BacktestError,
+        data::{Data, DataPreprocess, DataSource, Field, NpyDTyped, POD, Reader},
     },
     types::Order,
 };

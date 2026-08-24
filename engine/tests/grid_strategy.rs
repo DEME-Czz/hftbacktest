@@ -38,11 +38,27 @@ fn grid_strategy_quotes_both_sides_with_complete_book() {
 
     let bids = commands
         .iter()
-        .filter(|command| matches!(command, StrategyCommand::Submit { side: hftbacktest::types::Side::Buy, .. }))
+        .filter(|command| {
+            matches!(
+                command,
+                StrategyCommand::Submit {
+                    side: hftbacktest::types::Side::Buy,
+                    ..
+                }
+            )
+        })
         .count();
     let asks = commands
         .iter()
-        .filter(|command| matches!(command, StrategyCommand::Submit { side: hftbacktest::types::Side::Sell, .. }))
+        .filter(|command| {
+            matches!(
+                command,
+                StrategyCommand::Submit {
+                    side: hftbacktest::types::Side::Sell,
+                    ..
+                }
+            )
+        })
         .count();
 
     assert_eq!(bids, 3);

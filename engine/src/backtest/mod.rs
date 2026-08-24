@@ -62,7 +62,11 @@ pub struct Asset<L: ?Sized, E: ?Sized, D: NpyDTyped + Clone> {
 
 impl<L, E, D: NpyDTyped + Clone> Asset<L, E, D> {
     pub fn new(local: L, exch: E, reader: Reader<D>) -> Self {
-        Self { local: Box::new(local), exch: Box::new(exch), reader }
+        Self {
+            local: Box::new(local),
+            exch: Box::new(exch),
+            reader,
+        }
     }
 
     pub fn l2_builder<LM, AT, QM, MD, FM>() -> L2AssetBuilder<LM, AT, QM, MD, FM>
@@ -120,30 +124,62 @@ where
         }
     }
 
-    pub fn data(self, data: Vec<DataSource<Event>>) -> Self { Self { data, ..self } }
-    pub fn parallel_load(self, parallel_load: bool) -> Self { Self { parallel_load, ..self } }
-    pub fn latency_offset(self, latency_offset: i64) -> Self { Self { latency_offset, ..self } }
+    pub fn data(self, data: Vec<DataSource<Event>>) -> Self {
+        Self { data, ..self }
+    }
+    pub fn parallel_load(self, parallel_load: bool) -> Self {
+        Self {
+            parallel_load,
+            ..self
+        }
+    }
+    pub fn latency_offset(self, latency_offset: i64) -> Self {
+        Self {
+            latency_offset,
+            ..self
+        }
+    }
     pub fn latency_model(self, latency_model: LM) -> Self {
-        Self { latency_model: Some(latency_model), ..self }
+        Self {
+            latency_model: Some(latency_model),
+            ..self
+        }
     }
     pub fn asset_type(self, asset_type: AT) -> Self {
-        Self { asset_type: Some(asset_type), ..self }
+        Self {
+            asset_type: Some(asset_type),
+            ..self
+        }
     }
     pub fn fee_model(self, fee_model: FM) -> Self {
-        Self { fee_model: Some(fee_model), ..self }
+        Self {
+            fee_model: Some(fee_model),
+            ..self
+        }
     }
-    pub fn exchange(self, exch_kind: ExchangeKind) -> Self { Self { exch_kind, ..self } }
+    pub fn exchange(self, exch_kind: ExchangeKind) -> Self {
+        Self { exch_kind, ..self }
+    }
     pub fn last_trades_capacity(self, capacity: usize) -> Self {
-        Self { last_trades_cap: capacity, ..self }
+        Self {
+            last_trades_cap: capacity,
+            ..self
+        }
     }
     pub fn queue_model(self, queue_model: QM) -> Self {
-        Self { queue_model: Some(queue_model), ..self }
+        Self {
+            queue_model: Some(queue_model),
+            ..self
+        }
     }
     pub fn depth<Builder>(self, builder: Builder) -> Self
     where
         Builder: Fn() -> MD + 'static,
     {
-        Self { depth_builder: Some(Box::new(builder)), ..self }
+        Self {
+            depth_builder: Some(Box::new(builder)),
+            ..self
+        }
     }
 
     pub fn build(self) -> Result<Asset<dyn LocalProcessor<MD>, dyn Processor, Event>, BuildError> {
@@ -162,10 +198,22 @@ where
                 .map_err(|err| BuildError::Error(err.into()))?
         };
 
-        let create_depth = self.depth_builder.as_ref().ok_or(BuildError::BuilderIncomplete("depth"))?;
-        let order_latency = self.latency_model.clone().ok_or(BuildError::BuilderIncomplete("order_latency"))?;
-        let asset_type = self.asset_type.clone().ok_or(BuildError::BuilderIncomplete("asset_type"))?;
-        let fee_model = self.fee_model.clone().ok_or(BuildError::BuilderIncomplete("fee_model"))?;
+        let create_depth = self
+            .depth_builder
+            .as_ref()
+            .ok_or(BuildError::BuilderIncomplete("depth"))?;
+        let order_latency = self
+            .latency_model
+            .clone()
+            .ok_or(BuildError::BuilderIncomplete("order_latency"))?;
+        let asset_type = self
+            .asset_type
+            .clone()
+            .ok_or(BuildError::BuilderIncomplete("asset_type"))?;
+        let fee_model = self
+            .fee_model
+            .clone()
+            .ok_or(BuildError::BuilderIncomplete("fee_model"))?;
         let (order_e2l, order_l2e) = order_bus(order_latency);
         let local = Local::new(
             create_depth(),
@@ -173,20 +221,38 @@ where
             self.last_trades_cap,
             order_l2e,
         );
-        let queue_model = self.queue_model.ok_or(BuildError::BuilderIncomplete("queue_model"))?;
-        let asset_type = self.asset_type.clone().ok_or(BuildError::BuilderIncomplete("asset_type"))?;
-        let fee_model = self.fee_model.clone().ok_or(BuildError::BuilderIncomplete("fee_model"))?;
+        let queue_model = self
+            .queue_model
+            .ok_or(BuildError::BuilderIncomplete("queue_model"))?;
+        let asset_type = self
+            .asset_type
+            .clone()
+            .ok_or(BuildError::BuilderIncomplete("asset_type"))?;
+        let fee_model = self
+            .fee_model
+            .clone()
+            .ok_or(BuildError::BuilderIncomplete("fee_model"))?;
 
         let exch: Box<dyn Processor> = match self.exch_kind {
             ExchangeKind::NoPartialFillExchange => Box::new(NoPartialFillExchange::new(
-                create_depth(), State::new(asset_type, fee_model), queue_model, order_e2l,
+                create_depth(),
+                State::new(asset_type, fee_model),
+                queue_model,
+                order_e2l,
             )),
             ExchangeKind::PartialFillExchange => Box::new(PartialFillExchange::new(
-                create_depth(), State::new(asset_type, fee_model), queue_model, order_e2l,
+                create_depth(),
+                State::new(asset_type, fee_model),
+                queue_model,
+                order_e2l,
             )),
         };
 
-        Ok(Asset { local: Box::new(local), exch, reader })
+        Ok(Asset {
+            local: Box::new(local),
+            exch,
+            reader,
+        })
     }
 }
 
@@ -198,7 +264,9 @@ where
     LM: LatencyModel + Clone + 'static,
     FM: FeeModel + Clone + 'static,
 {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct BacktestBuilder<MD> {
@@ -209,8 +277,12 @@ pub struct BacktestBuilder<MD> {
 impl<MD> BacktestBuilder<MD> {
     pub fn add_asset(self, asset: Asset<dyn LocalProcessor<MD>, dyn Processor, Event>) -> Self {
         let mut this = self;
-        this.local.push(BacktestProcessorState::new(asset.local, asset.reader.clone()));
-        this.exch.push(BacktestProcessorState::new(asset.exch, asset.reader));
+        this.local.push(BacktestProcessorState::new(
+            asset.local,
+            asset.reader.clone(),
+        ));
+        this.exch
+            .push(BacktestProcessorState::new(asset.exch, asset.reader));
         this
     }
 
@@ -233,10 +305,14 @@ pub struct Backtest<MD> {
 
 impl<P: Processor> Deref for BacktestProcessorState<P> {
     type Target = P;
-    fn deref(&self) -> &Self::Target { &self.processor }
+    fn deref(&self) -> &Self::Target {
+        &self.processor
+    }
 }
 impl<P: Processor> DerefMut for BacktestProcessorState<P> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.processor }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.processor
+    }
 }
 
 pub struct BacktestProcessorState<P: Processor> {
@@ -248,11 +324,18 @@ pub struct BacktestProcessorState<P: Processor> {
 
 impl<P: Processor> BacktestProcessorState<P> {
     fn new(processor: P, reader: Reader<Event>) -> Self {
-        Self { data: Data::empty(), processor, reader, row: None }
+        Self {
+            data: Data::empty(),
+            processor,
+            reader,
+            row: None,
+        }
     }
 
     fn next_row(&mut self) -> Result<usize, BacktestError> {
-        if self.row.is_none() { let _ = self.advance()?; }
+        if self.row.is_none() {
+            let _ = self.advance()?;
+        }
         self.row.ok_or(BacktestError::EndOfData)
     }
 
@@ -277,7 +360,10 @@ where
     MD: MarketDepth,
 {
     pub fn builder() -> BacktestBuilder<MD> {
-        BacktestBuilder { local: vec![], exch: vec![] }
+        BacktestBuilder {
+            local: vec![],
+            exch: vec![],
+        }
     }
 
     pub fn new(
@@ -298,7 +384,12 @@ where
             .zip(reader.iter())
             .map(|(processor, reader)| BacktestProcessorState::new(processor, reader.clone()))
             .collect();
-        Self { local, exch, cur_ts: i64::MAX, evs: EventSet::new(num_assets) }
+        Self {
+            local,
+            exch,
+            cur_ts: i64::MAX,
+            evs: EventSet::new(num_assets),
+        }
     }
 
     fn initialize_evs(&mut self) -> Result<(), BacktestError> {
@@ -338,12 +429,16 @@ where
         let mut result = ElapseResult::Ok;
         let mut target = timestamp;
         for (asset_no, local) in self.local.iter().enumerate() {
-            self.evs.update_exch_order(asset_no, local.earliest_send_order_timestamp());
-            self.evs.update_local_order(asset_no, local.earliest_recv_order_timestamp());
+            self.evs
+                .update_exch_order(asset_no, local.earliest_send_order_timestamp());
+            self.evs
+                .update_local_order(asset_no, local.earliest_recv_order_timestamp());
         }
 
         loop {
-            let Some(intent) = self.evs.next() else { return Ok(ElapseResult::EndOfData); };
+            let Some(intent) = self.evs.next() else {
+                return Ok(ElapseResult::EndOfData);
+            };
             if intent.timestamp > target {
                 self.cur_ts = target;
                 return Ok(result);
@@ -357,7 +452,9 @@ where
                     });
                     match next {
                         Ok(ts) => self.evs.update_local_data(intent.asset_no, ts),
-                        Err(BacktestError::EndOfData) => self.evs.invalidate_local_data(intent.asset_no),
+                        Err(BacktestError::EndOfData) => {
+                            self.evs.invalidate_local_data(intent.asset_no)
+                        }
                         Err(error) => return Err(error),
                     }
                     if WAIT_NEXT_FEED {
@@ -368,16 +465,23 @@ where
                 EventIntentKind::LocalOrder => {
                     let local = unsafe { self.local.get_unchecked_mut(intent.asset_no) };
                     let wait_id = match wait_order_response {
-                        WaitOrderResponse::Specified { asset_no, order_id } if asset_no == intent.asset_no => Some(order_id),
+                        WaitOrderResponse::Specified { asset_no, order_id }
+                            if asset_no == intent.asset_no =>
+                        {
+                            Some(order_id)
+                        }
                         _ => None,
                     };
                     if local.process_recv_order(intent.timestamp, wait_id)?
                         || wait_order_response == WaitOrderResponse::Any
                     {
                         target = intent.timestamp;
-                        if WAIT_NEXT_FEED { result = ElapseResult::OrderResponse; }
+                        if WAIT_NEXT_FEED {
+                            result = ElapseResult::OrderResponse;
+                        }
                     }
-                    self.evs.update_local_order(intent.asset_no, local.earliest_recv_order_timestamp());
+                    self.evs
+                        .update_local_order(intent.asset_no, local.earliest_recv_order_timestamp());
                 }
                 EventIntentKind::ExchData => {
                     let exch = unsafe { self.exch.get_unchecked_mut(intent.asset_no) };
@@ -387,16 +491,21 @@ where
                     });
                     match next {
                         Ok(ts) => self.evs.update_exch_data(intent.asset_no, ts),
-                        Err(BacktestError::EndOfData) => self.evs.invalidate_exch_data(intent.asset_no),
+                        Err(BacktestError::EndOfData) => {
+                            self.evs.invalidate_exch_data(intent.asset_no)
+                        }
                         Err(error) => return Err(error),
                     }
-                    self.evs.update_local_order(intent.asset_no, exch.earliest_send_order_timestamp());
+                    self.evs
+                        .update_local_order(intent.asset_no, exch.earliest_send_order_timestamp());
                 }
                 EventIntentKind::ExchOrder => {
                     let exch = unsafe { self.exch.get_unchecked_mut(intent.asset_no) };
                     let _ = exch.process_recv_order(intent.timestamp, None)?;
-                    self.evs.update_exch_order(intent.asset_no, exch.earliest_recv_order_timestamp());
-                    self.evs.update_local_order(intent.asset_no, exch.earliest_send_order_timestamp());
+                    self.evs
+                        .update_exch_order(intent.asset_no, exch.earliest_recv_order_timestamp());
+                    self.evs
+                        .update_local_order(intent.asset_no, exch.earliest_send_order_timestamp());
                 }
             }
         }
@@ -409,21 +518,38 @@ where
 {
     type Error = BacktestError;
 
-    fn current_timestamp(&self) -> i64 { self.cur_ts }
-    fn num_assets(&self) -> usize { self.local.len() }
-    fn position(&self, asset_no: usize) -> f64 { self.local[asset_no].position() }
-    fn state_values(&self, asset_no: usize) -> &StateValues { self.local[asset_no].state_values() }
-    fn depth(&self, asset_no: usize) -> &MD { self.local[asset_no].depth() }
-    fn last_trades(&self, asset_no: usize) -> &[Event] { self.local[asset_no].last_trades() }
+    fn current_timestamp(&self) -> i64 {
+        self.cur_ts
+    }
+    fn num_assets(&self) -> usize {
+        self.local.len()
+    }
+    fn position(&self, asset_no: usize) -> f64 {
+        self.local[asset_no].position()
+    }
+    fn state_values(&self, asset_no: usize) -> &StateValues {
+        self.local[asset_no].state_values()
+    }
+    fn depth(&self, asset_no: usize) -> &MD {
+        self.local[asset_no].depth()
+    }
+    fn last_trades(&self, asset_no: usize) -> &[Event] {
+        self.local[asset_no].last_trades()
+    }
 
     fn clear_last_trades(&mut self, asset_no: Option<usize>) {
         match asset_no {
             Some(asset_no) => self.local[asset_no].clear_last_trades(),
-            None => self.local.iter_mut().for_each(|local| local.clear_last_trades()),
+            None => self
+                .local
+                .iter_mut()
+                .for_each(|local| local.clear_last_trades()),
         }
     }
 
-    fn orders(&self, asset_no: usize) -> &HashMap<OrderId, Order> { self.local[asset_no].orders() }
+    fn orders(&self, asset_no: usize) -> &HashMap<OrderId, Order> {
+        self.local[asset_no].orders()
+    }
 
     fn submit_buy_order(
         &mut self,
@@ -436,10 +562,19 @@ where
         wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
         self.local[asset_no].submit_order(
-            order_id, Side::Buy, price, qty, order_type, time_in_force, self.cur_ts,
+            order_id,
+            Side::Buy,
+            price,
+            qty,
+            order_type,
+            time_in_force,
+            self.cur_ts,
         )?;
         if wait {
-            self.goto::<false>(UNTIL_END_OF_DATA, WaitOrderResponse::Specified { asset_no, order_id })
+            self.goto::<false>(
+                UNTIL_END_OF_DATA,
+                WaitOrderResponse::Specified { asset_no, order_id },
+            )
         } else {
             Ok(ElapseResult::Ok)
         }
@@ -456,10 +591,19 @@ where
         wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
         self.local[asset_no].submit_order(
-            order_id, Side::Sell, price, qty, order_type, time_in_force, self.cur_ts,
+            order_id,
+            Side::Sell,
+            price,
+            qty,
+            order_type,
+            time_in_force,
+            self.cur_ts,
         )?;
         if wait {
-            self.goto::<false>(UNTIL_END_OF_DATA, WaitOrderResponse::Specified { asset_no, order_id })
+            self.goto::<false>(
+                UNTIL_END_OF_DATA,
+                WaitOrderResponse::Specified { asset_no, order_id },
+            )
         } else {
             Ok(ElapseResult::Ok)
         }
@@ -472,13 +616,21 @@ where
         wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
         self.local[asset_no].submit_order(
-            order.order_id, order.side, order.price, order.qty, order.order_type,
-            order.time_in_force, self.cur_ts,
+            order.order_id,
+            order.side,
+            order.price,
+            order.qty,
+            order.order_type,
+            order.time_in_force,
+            self.cur_ts,
         )?;
         if wait {
             self.goto::<false>(
                 UNTIL_END_OF_DATA,
-                WaitOrderResponse::Specified { asset_no, order_id: order.order_id },
+                WaitOrderResponse::Specified {
+                    asset_no,
+                    order_id: order.order_id,
+                },
             )
         } else {
             Ok(ElapseResult::Ok)
@@ -495,7 +647,10 @@ where
     ) -> Result<ElapseResult, Self::Error> {
         self.local[asset_no].modify(order_id, price, qty, self.cur_ts)?;
         if wait {
-            self.goto::<false>(UNTIL_END_OF_DATA, WaitOrderResponse::Specified { asset_no, order_id })
+            self.goto::<false>(
+                UNTIL_END_OF_DATA,
+                WaitOrderResponse::Specified { asset_no, order_id },
+            )
         } else {
             Ok(ElapseResult::Ok)
         }
@@ -509,7 +664,10 @@ where
     ) -> Result<ElapseResult, Self::Error> {
         self.local[asset_no].cancel(order_id, self.cur_ts)?;
         if wait {
-            self.goto::<false>(UNTIL_END_OF_DATA, WaitOrderResponse::Specified { asset_no, order_id })
+            self.goto::<false>(
+                UNTIL_END_OF_DATA,
+                WaitOrderResponse::Specified { asset_no, order_id },
+            )
         } else {
             Ok(ElapseResult::Ok)
         }
@@ -518,7 +676,10 @@ where
     fn clear_inactive_orders(&mut self, asset_no: Option<usize>) {
         match asset_no {
             Some(asset_no) => self.local[asset_no].clear_inactive_orders(),
-            None => self.local.iter_mut().for_each(|local| local.clear_inactive_orders()),
+            None => self
+                .local
+                .iter_mut()
+                .for_each(|local| local.clear_inactive_orders()),
         }
     }
 
@@ -546,7 +707,11 @@ where
                 None => return Ok(ElapseResult::EndOfData),
             }
         }
-        let wait = if include_order_resp { WaitOrderResponse::Any } else { WaitOrderResponse::None };
+        let wait = if include_order_resp {
+            WaitOrderResponse::Any
+        } else {
+            WaitOrderResponse::None
+        };
         self.goto::<true>(self.cur_ts + timeout, wait)
     }
 
@@ -561,8 +726,16 @@ where
         self.goto::<false>(self.cur_ts + duration, WaitOrderResponse::None)
     }
 
-    fn elapse_bt(&mut self, duration: i64) -> Result<ElapseResult, Self::Error> { self.elapse(duration) }
-    fn close(&mut self) -> Result<(), Self::Error> { Ok(()) }
-    fn feed_latency(&self, asset_no: usize) -> Option<(i64, i64)> { self.local[asset_no].feed_latency() }
-    fn order_latency(&self, asset_no: usize) -> Option<(i64, i64, i64)> { self.local[asset_no].order_latency() }
+    fn elapse_bt(&mut self, duration: i64) -> Result<ElapseResult, Self::Error> {
+        self.elapse(duration)
+    }
+    fn close(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn feed_latency(&self, asset_no: usize) -> Option<(i64, i64)> {
+        self.local[asset_no].feed_latency()
+    }
+    fn order_latency(&self, asset_no: usize) -> Option<(i64, i64, i64)> {
+        self.local[asset_no].order_latency()
+    }
 }

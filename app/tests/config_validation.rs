@@ -20,9 +20,8 @@ fn execute_requires_complete_credentials_and_private_stream() {
 
 #[test]
 fn execute_rejects_credentials_without_a_private_stream_template() {
-    let raw = format!(
-        "{PUBLIC_ONLY}\napi_key = \"configured-key\"\nsecret = \"configured-secret\"\n"
-    );
+    let raw =
+        format!("{PUBLIC_ONLY}\napi_key = \"configured-key\"\nsecret = \"configured-secret\"\n");
     let error = AppConfig::parse_and_validate(&raw, RunMode::Execute).unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -36,22 +35,26 @@ fn remote_endpoints_must_use_encrypted_transports() {
         .replace("wss://example.test/ws", "ws://example.test/ws")
         .replace("https://example.test", "http://example.test");
     let error = AppConfig::parse_and_validate(&raw, RunMode::DryRun).unwrap_err();
-    assert_eq!(error.to_string(), "remote Binance endpoints must use wss/https");
+    assert_eq!(
+        error.to_string(),
+        "remote Binance endpoints must use wss/https"
+    );
 }
 
 #[test]
 fn partial_credentials_are_rejected_in_every_mode() {
     let raw = format!("{PUBLIC_ONLY}\napi_key = \"key-only\"\n");
     let error = AppConfig::parse_and_validate(&raw, RunMode::DryRun).unwrap_err();
-    assert_eq!(error.to_string(), "api_key and secret must be configured together");
+    assert_eq!(
+        error.to_string(),
+        "api_key and secret must be configured together"
+    );
 }
 
 #[test]
 fn configuration_errors_do_not_expose_secret_values() {
     let sentinel = "DO_NOT_LEAK_THIS_SECRET";
-    let raw = format!(
-        "{PUBLIC_ONLY}\napi_key = \"key\"\nsecret = \"{sentinel}\"\nbroken = [\n"
-    );
+    let raw = format!("{PUBLIC_ONLY}\napi_key = \"key\"\nsecret = \"{sentinel}\"\nbroken = [\n");
     let error = AppConfig::parse_and_validate(&raw, RunMode::Execute).unwrap_err();
     let rendered = format!("{error:?} {error}");
     assert!(!rendered.contains(sentinel));

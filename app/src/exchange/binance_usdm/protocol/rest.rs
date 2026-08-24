@@ -2,8 +2,8 @@ use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use serde::Deserialize;
 
 use super::{
-    from_str_to_f64, from_str_to_f64_opt, from_str_to_side, from_str_to_status,
-    from_str_to_tif, from_str_to_type, to_lowercase,
+    from_str_to_f64, from_str_to_f64_opt, from_str_to_side, from_str_to_status, from_str_to_tif,
+    from_str_to_type, to_lowercase,
 };
 
 #[derive(Deserialize, Debug)]
@@ -55,9 +55,17 @@ pub struct OrderResponse {
     pub ty: OrdType,
     #[serde(rename = "origType", deserialize_with = "from_str_to_type")]
     pub orig_type: OrdType,
-    #[serde(rename = "activatePrice", default, deserialize_with = "from_str_to_f64_opt")]
+    #[serde(
+        rename = "activatePrice",
+        default,
+        deserialize_with = "from_str_to_f64_opt"
+    )]
     pub activate_price: Option<f64>,
-    #[serde(rename = "priceRate", default, deserialize_with = "from_str_to_f64_opt")]
+    #[serde(
+        rename = "priceRate",
+        default,
+        deserialize_with = "from_str_to_f64_opt"
+    )]
     pub price_rate: Option<f64>,
     #[serde(rename = "updateTime")]
     pub update_time: i64,
@@ -115,7 +123,10 @@ pub struct PositionInformationV3 {
     pub maint_margin: f64,
     #[serde(rename = "positionInitialMargin", deserialize_with = "from_str_to_f64")]
     pub position_initial_margin: f64,
-    #[serde(rename = "openOrderInitialMargin", deserialize_with = "from_str_to_f64")]
+    #[serde(
+        rename = "openOrderInitialMargin",
+        deserialize_with = "from_str_to_f64"
+    )]
     pub open_order_initial_margin: f64,
     pub adl: i64,
     #[serde(rename = "bidNotional", deserialize_with = "from_str_to_f64")]

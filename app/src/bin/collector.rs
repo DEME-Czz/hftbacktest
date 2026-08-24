@@ -38,7 +38,10 @@ async fn main() -> Result<()> {
     let file = File::create(&args.path)
         .with_context(|| format!("failed to create collector output: {}", args.path))?;
     let mut writer = BufWriter::new(file);
-    writeln!(writer, "symbol,ev,exch_ts,local_ts,px,qty,order_id,ival,fval")?;
+    writeln!(
+        writer,
+        "symbol,ev,exch_ts,local_ts,px,qty,order_id,ival,fval"
+    )?;
     writer.flush()?;
 
     let (tx, mut rx) = unbounded_channel();

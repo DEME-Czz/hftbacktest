@@ -39,7 +39,11 @@ impl NpyHeader {
     }
 
     pub fn fortran_order(&self) -> String {
-        if self.fortran_order { "True".into() } else { "False".into() }
+        if self.fortran_order {
+            "True".into()
+        } else {
+            "False".into()
+        }
     }
 
     pub fn shape(&self) -> String {
@@ -63,25 +67,44 @@ impl NpyHeader {
                     for item in value.get_list()? {
                         let tuple = item.get_list()?;
                         if tuple.len() != 2 {
-                            return Err(Error::new(ErrorKind::InvalidData, "dtype entry must contain 2 items"));
+                            return Err(Error::new(
+                                ErrorKind::InvalidData,
+                                "dtype entry must contain 2 items",
+                            ));
                         }
                         match (&tuple[0], &tuple[1]) {
                             (Value::String(name), Value::String(dtype)) => descr.push(Field {
                                 name: name.clone(),
                                 ty: dtype.clone(),
                             }),
-                            _ => return Err(Error::new(ErrorKind::InvalidData, "invalid dtype entry")),
+                            _ => {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "invalid dtype entry",
+                                ));
+                            }
                         }
                     }
                 }
                 "fortran_order" => fortran_order = value.get_bool()?,
                 "shape" => {
-                    for number in value.get_list()? { shape.push(number.get_integer()?); }
+                    for number in value.get_list()? {
+                        shape.push(number.get_integer()?);
+                    }
                 }
-                _ => return Err(Error::new(ErrorKind::InvalidData, "unexpected numpy header key")),
+                _ => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        "unexpected numpy header key",
+                    ));
+                }
             }
         }
-        Ok(Self { descr, fortran_order, shape })
+        Ok(Self {
+            descr,
+            fortran_order,
+            shape,
+        })
     }
 
     fn to_string_padding(&self) -> String {
@@ -102,47 +125,78 @@ impl NpyHeader {
 
 fn check_field_consistency(expected: &DType, found: &DType) -> std::io::Result<()> {
     if expected.len() != found.len() {
-        return Err(Error::new(ErrorKind::InvalidData, "numpy dtype field count mismatch"));
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "numpy dtype field count mismatch",
+        ));
     }
     for (expected, found) in expected.iter().zip(found.iter()) {
         if expected.ty != found.ty {
             return Err(Error::new(
                 ErrorKind::InvalidData,
-                format!("dtype mismatch: expected {}:{}, found {}:{}", expected.name, expected.ty, found.name, found.ty),
+                format!(
+                    "dtype mismatch: expected {}:{}, found {}:{}",
+                    expected.name, expected.ty, found.name, found.ty
+                ),
             ));
         }
     }
     Ok(())
 }
 
-pub fn read_npy<R: Read, D: NpyDTyped + Clone>(reader: &mut R, size: usize) -> std::io::Result<Data<D>> {
+pub fn read_npy<R: Read, D: NpyDTyped + Clone>(
+    reader: &mut R,
+    size: usize,
+) -> std::io::Result<Data<D>> {
     let mut buf = DataPtr::new(size);
     let mut read_size = 0;
     while read_size < size {
         let n = reader.read(&mut buf[read_size..])?;
-        if n == 0 { return Err(Error::new(ErrorKind::UnexpectedEof, "unexpected end of numpy file")); }
+        if n == 0 {
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                "unexpected end of numpy file",
+            ));
+        }
         read_size += n;
     }
 
     if buf[0..6].to_vec() != b"\x93NUMPY" {
-        return Err(Error::new(ErrorKind::InvalidData, "must start with \\x93NUMPY"));
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "must start with \\x93NUMPY",
+        ));
     }
     if buf[6..8].to_vec() != b"\x01\x00" {
-        return Err(Error::new(ErrorKind::InvalidData, "only numpy version 1.0 is supported"));
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "only numpy version 1.0 is supported",
+        ));
     }
     let header_len = u16::from_le_bytes(buf[8..10].try_into().unwrap()) as usize;
     let header = String::from_utf8(buf[10..10 + header_len].to_vec())
         .map_err(|error| Error::new(ErrorKind::InvalidData, error.to_string()))?;
     let header = NpyHeader::from_header(&header)?;
     if header.fortran_order {
-        return Err(Error::new(ErrorKind::InvalidData, "fortran order is unsupported"));
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "fortran order is unsupported",
+        ));
     }
-    if D::descr() != header.descr { check_field_consistency(&D::descr(), &header.descr)?; }
+    if D::descr() != header.descr {
+        check_field_consistency(&D::descr(), &header.descr)?;
+    }
     if header.shape.len() != 1 {
-        return Err(Error::new(ErrorKind::InvalidData, "only one-dimensional numpy arrays are supported"));
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "only one-dimensional numpy arrays are supported",
+        ));
     }
     if !(10 + header_len).is_multiple_of(CACHE_LINE_SIZE) {
-        return Err(Error::new(ErrorKind::InvalidData, "numpy data is not cache-line aligned"));
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "numpy data is not cache-line aligned",
+        ));
     }
     Ok(unsafe { Data::from_data_ptr(buf, 10 + header_len) })
 }
@@ -161,7 +215,11 @@ pub fn read_npz_file<D: NpyDTyped + Clone>(filepath: &str, name: &str) -> std::i
 }
 
 pub fn write_npy<W: Write, T: NpyDTyped>(write: &mut W, data: &[T]) -> std::io::Result<()> {
-    let header = NpyHeader { descr: T::descr(), fortran_order: false, shape: vec![data.len()] };
+    let header = NpyHeader {
+        descr: T::descr(),
+        fortran_order: false,
+        shape: vec![data.len()],
+    };
     write.write_all(b"\x93NUMPY\x01\x00")?;
     let header = header.to_string_padding();
     write.write_all(&(header.len() as u16).to_le_bytes())?;
@@ -171,5 +229,7 @@ pub fn write_npy<W: Write, T: NpyDTyped>(write: &mut W, data: &[T]) -> std::io::
 }
 
 fn as_bytes<T>(values: &[T]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values)) }
+    unsafe {
+        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
+    }
 }
