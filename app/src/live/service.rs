@@ -874,6 +874,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_market_retries_cancellation_while_the_order_remains_active() {
+        let connector = PositionOnlyConnector {
+            confirm_cancel: false,
+            ..PositionOnlyConnector::default()
+        };
+        let mut order = Order::new(
+            13,
+            1_000,
+            0.1,
+            0.001,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::GTC,
+        );
+        order.status = hftbacktest::types::Status::New;
+        connector.open_orders.lock().unwrap().push(order);
+        let canceled = connector.canceled.clone();
+        let service = LiveService::with_safety(
+            connector,
+            grid_runtimes(),
+            RiskConfig::default(),
+            SafetyConfig {
+                stale_market_timeout_ms: 20,
+                shutdown_cancel_timeout_ms: 25,
+                kill_switch_file: None,
+            },
+            RunMode::Execute,
+        );
+
+        let result = service
+            .run_until(async {
+                time::sleep(Duration::from_millis(560)).await;
+            })
+            .await;
+
+        assert!(result.is_err(), "the unconfirmed order must fail shutdown");
+        assert!(
+            canceled.lock().unwrap().len() >= 3,
+            "stale cancellation must retry before the final shutdown attempt"
+        );
+    }
+
+    #[tokio::test]
     async fn kill_switch_present_at_start_prevents_submit_and_cancels_tracked_orders() {
         let kill_switch = std::env::temp_dir().join(format!(
             "hft-app-kill-switch-{}-{}",

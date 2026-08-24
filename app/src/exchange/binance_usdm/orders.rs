@@ -70,7 +70,7 @@ impl OrderManager {
             .ok_or(BinanceFuturesError::OrderNotFound)?;
 
         let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-        if resp.transaction_time * 1_000_000 >= order_ext.order.exch_timestamp {
+        if !already_removed && resp.transaction_time * 1_000_000 >= order_ext.order.exch_timestamp {
             order_ext.order.qty = resp.order.original_qty;
             order_ext.order.leaves_qty =
                 resp.order.original_qty - resp.order.order_filled_accumulated_qty;
