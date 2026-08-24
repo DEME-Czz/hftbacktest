@@ -763,4 +763,72 @@ mod tests {
         assert!(requests[0].starts_with("POST /fapi/v1/order "));
         assert!(requests[1].starts_with("DELETE /fapi/v1/order "));
     }
+
+    #[tokio::test]
+    async fn unknown_cancel_result_keeps_the_order_tracked_and_latches_execution() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for (code, message) in [
+                (-2011, "cancel status unknown"),
+                (-2013, "order does not exist"),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                requests.push(read_http_request(&mut stream).await);
+                let body = serde_json::json!({ "code": code, "msg": message }).to_string();
+                let response = format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+
+        let connector = BinanceFutures::new(BinanceConfig {
+            public_stream_url: "ws://127.0.0.1/".to_string(),
+            private_stream_url: "ws://127.0.0.1/{listen_key}".to_string(),
+            api_url: format!("http://{address}"),
+            order_prefix: "strategy-a".to_string(),
+            api_key: "key".to_string(),
+            secret: "secret".to_string(),
+            allow_test_endpoints: true,
+        })
+        .unwrap();
+        let mut order = Order::new(
+            86,
+            1_000,
+            0.1,
+            1.0,
+            Side::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        );
+        order.status = Status::New;
+        super::lock_recover(&connector.order_manager)
+            .prepare_client_order_id("btcusdt".to_string(), order.clone())
+            .unwrap();
+        let (tx, mut rx) = unbounded_channel();
+
+        connector.cancel("btcusdt".to_string(), order, tx);
+
+        let uncertain = time::timeout(Duration::from_secs(1), async {
+            loop {
+                if matches!(
+                    rx.recv().await,
+                    Some(PublishEvent::ExecutionUncertain { symbol }) if symbol == "btcusdt"
+                ) {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(uncertain.is_ok(), "an unconfirmed cancel must latch execution");
+        assert_eq!(connector.open_orders("btcusdt").len(), 1);
+        let requests = server.await.unwrap();
+        assert!(requests[0].starts_with("DELETE /fapi/v1/order "));
+        assert!(requests[1].starts_with("GET /fapi/v1/order?"));
+    }
 }
