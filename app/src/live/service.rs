@@ -69,7 +69,9 @@ impl AccountReadiness {
     fn observe_order(&mut self, symbol: &str, order: &hftbacktest::types::Order) {
         if !matches!(
             order.status,
-            hftbacktest::types::Status::PartiallyFilled | hftbacktest::types::Status::Filled
+            hftbacktest::types::Status::PartiallyFilled
+                | hftbacktest::types::Status::Filled
+                | hftbacktest::types::Status::Expired
         ) || !order.exec_qty.is_finite()
             || order.exec_qty <= 0.0
         {
