@@ -421,6 +421,68 @@ mod tests {
         confirm_cancel: bool,
     }
 
+    #[derive(Clone, Default)]
+    struct ManualConnector {
+        event_tx: Arc<Mutex<Option<UnboundedSender<PublishEvent>>>>,
+        submitted: Arc<Mutex<Vec<Order>>>,
+    }
+
+    impl MarketDataSource for ManualConnector {
+        fn register(&mut self, _symbol: String) {}
+
+        fn start_market_data(&mut self, tx: UnboundedSender<PublishEvent>) {
+            *self.event_tx.lock().unwrap() = Some(tx);
+        }
+    }
+
+    impl ExecutionVenue for ManualConnector {
+        fn start_account_stream(
+            &self,
+            _instruments: Vec<TradingInstrument>,
+            _tx: UnboundedSender<PublishEvent>,
+        ) {
+        }
+
+        fn open_orders(&self, _symbol: &str) -> Vec<Order> {
+            Vec::new()
+        }
+
+        fn submit(
+            &self,
+            _symbol: String,
+            order: Order,
+            _lot_size: f64,
+            _tx: UnboundedSender<PublishEvent>,
+        ) {
+            self.submitted.lock().unwrap().push(order);
+        }
+
+        fn cancel(&self, _symbol: String, _order: Order, _tx: UnboundedSender<PublishEvent>) {}
+    }
+
+    fn send_depth_batch(tx: &UnboundedSender<PublishEvent>, timestamp: i64, quantity: f64) {
+        for (ev, px) in [
+            (LOCAL_BID_DEPTH_EVENT, 100.0),
+            (LOCAL_ASK_DEPTH_EVENT, 101.0),
+        ] {
+            tx.send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                symbol: "btcusdt".to_string(),
+                event: Event {
+                    ev,
+                    exch_ts: timestamp,
+                    local_ts: timestamp,
+                    px,
+                    qty: quantity,
+                    order_id: 0,
+                    ival: 0,
+                    fval: 0.0,
+                },
+            }))
+            .unwrap();
+        }
+        tx.send(PublishEvent::BatchEnd).unwrap();
+    }
+
     impl Default for PositionOnlyConnector {
         fn default() -> Self {
             Self {
@@ -585,6 +647,78 @@ mod tests {
             .unwrap();
 
         assert!(!submitted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fill_blocks_replenishment_until_the_matching_position_update_arrives() {
+        let connector = ManualConnector::default();
+        let event_tx = connector.event_tx.clone();
+        let submitted = connector.submitted.clone();
+        let service = LiveService::new(
+            connector,
+            grid_runtimes(),
+            RiskConfig::default(),
+            RunMode::Execute,
+        );
+
+        service
+            .run_until(async move {
+                let tx = loop {
+                    if let Some(tx) = event_tx.lock().unwrap().clone() {
+                        break tx;
+                    }
+                    tokio::task::yield_now().await;
+                };
+                tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
+                    symbol: "btcusdt".to_string(),
+                    qty: 0.0,
+                    exch_ts: 100,
+                }))
+                .unwrap();
+                tx.send(PublishEvent::AccountSnapshotReady {
+                    symbol: "btcusdt".to_string(),
+                })
+                .unwrap();
+                send_depth_batch(&tx, 100, 10.0);
+                time::sleep(Duration::from_millis(20)).await;
+
+                let (initial_count, mut filled) = {
+                    let submitted = submitted.lock().unwrap();
+                    let filled = submitted
+                        .iter()
+                        .find(|order| order.side == hftbacktest::types::Side::Buy)
+                        .cloned()
+                        .expect("initial grid must include a bid");
+                    (submitted.len(), filled)
+                };
+                filled.req = hftbacktest::types::Status::None;
+                filled.status = hftbacktest::types::Status::Filled;
+                filled.exec_qty = filled.qty;
+                filled.leaves_qty = 0.0;
+                filled.exch_timestamp = 200;
+                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                    symbol: "btcusdt".to_string(),
+                    order: filled,
+                }))
+                .unwrap();
+                send_depth_batch(&tx, 200, 11.0);
+                time::sleep(Duration::from_millis(20)).await;
+
+                assert_eq!(
+                    submitted.lock().unwrap().len(),
+                    initial_count,
+                    "a fill must not be replenished while position is still stale"
+                );
+
+                tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
+                    symbol: "btcusdt".to_string(),
+                    qty: 0.001,
+                    exch_ts: 200,
+                }))
+                .unwrap();
+            })
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
