@@ -458,7 +458,9 @@ mod tests {
 
     use super::OrderManager;
     use crate::exchange::binance_usdm::{
-        BinanceFuturesError, id::ClientOrderIdCodec, protocol::rest::OrderResponse,
+        BinanceFuturesError,
+        id::ClientOrderIdCodec,
+        protocol::{rest::OrderResponse, stream::OrderTradeUpdate},
     };
 
     fn open_order_for(client_order_id: &str, symbol: &str) -> OrderResponse {
@@ -496,6 +498,84 @@ mod tests {
 
     fn open_order(client_order_id: &str) -> OrderResponse {
         open_order_for(client_order_id, "BTCUSDT")
+    }
+
+    fn active_websocket_update(
+        client_order_id: &str,
+        status: &str,
+        transaction_time: i64,
+    ) -> OrderTradeUpdate {
+        serde_json::from_str(
+            &json!({
+            "E": transaction_time,
+            "T": transaction_time,
+            "o": {
+                "s": "BTCUSDT",
+                "c": client_order_id,
+                "S": "BUY",
+                "o": "LIMIT",
+                "f": "GTC",
+                "q": "1.000",
+                "p": "100.0",
+                "ap": "100.0",
+                "sp": "0",
+                "x": "NEW",
+                "X": status,
+                "i": 123,
+                "l": "0",
+                "z": "0.250",
+                "L": "0",
+                "T": transaction_time,
+                "t": 0
+            }
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    fn assert_rest_terminal_order_rejects_active_websocket_update(
+        websocket_status: &str,
+        websocket_timestamp: i64,
+    ) {
+        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
+        let mut manager = OrderManager::new(codec);
+        let mut local = hftbacktest::types::Order::new(
+            123,
+            1_000,
+            0.1,
+            1.0,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::GTC,
+        );
+        local.req = hftbacktest::types::Status::New;
+        let client_order_id = manager
+            .prepare_client_order_id("btcusdt".to_string(), local)
+            .unwrap();
+
+        let mut terminal_response = open_order(&client_order_id);
+        terminal_response.status = hftbacktest::types::Status::Filled;
+        terminal_response.cum_qty = terminal_response.orig_qty;
+        terminal_response.executed_qty = terminal_response.orig_qty;
+        let terminal = manager
+            .update_from_rest(&client_order_id, &terminal_response)
+            .unwrap();
+        assert_eq!(terminal.status, hftbacktest::types::Status::Filled);
+
+        let active_update =
+            active_websocket_update(&client_order_id, websocket_status, websocket_timestamp);
+        assert!(manager.update_from_ws(&active_update).unwrap().is_none());
+        assert!(manager.active_orders("btcusdt").is_empty());
+        assert!(manager.orders.get(&client_order_id).is_none_or(|tracked| {
+            !matches!(
+                tracked.order.status,
+                hftbacktest::types::Status::New | hftbacktest::types::Status::PartiallyFilled
+            )
+        }));
+
+        manager.gc();
+        assert!(!manager.orders.contains_key(&client_order_id));
     }
 
     #[test]
@@ -596,5 +676,15 @@ mod tests {
                 .is_none()
         );
         assert!(manager.active_orders("btcusdt").is_empty());
+    }
+
+    #[test]
+    fn terminal_rest_update_wins_over_equal_timestamp_new_websocket_update() {
+        assert_rest_terminal_order_rejects_active_websocket_update("NEW", 1_234);
+    }
+
+    #[test]
+    fn terminal_rest_update_wins_over_newer_partially_filled_websocket_update() {
+        assert_rest_terminal_order_rejects_active_websocket_update("PARTIALLY_FILLED", 1_235);
     }
 }
