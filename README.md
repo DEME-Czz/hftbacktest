@@ -69,7 +69,7 @@ max_position = 0.003
 字段边界：
 
 - Binance 层只负责 WS / REST / Order Manager。
-- `[[strategies]]` 只定义策略类型和策略参数。
+- `[[strategies]]` 是 Runtime 唯一的 symbol 和策略配置来源。
 - `[risk]` 是所有 Live StrategyCommand 发往交易所前的最终闸门。
 - 当前一个 symbol 只允许配置一个内建策略；未来新增策略时扩展 `BuiltinStrategy`，不修改 Binance Adapter。
 - `tick_size`、`lot_size` 必须与交易所当前合约规则一致。
@@ -111,15 +111,10 @@ StrategyCommand
 
 ```bash
 RUST_LOG=debug cargo run -p hft-app -- \
-  app/examples/local.toml \
-  BTCUSDT
+  app/examples/local.toml
 ```
 
-如果不指定 symbol，则运行配置中全部 `[[strategies]]`：
-
-```bash
-cargo run -p hft-app -- app/examples/local.toml
-```
+Runtime 会自动读取配置文件里全部 `[[strategies]]`，并订阅其中配置的 symbol。CLI 不再重复接收 symbol 参数。
 
 Dry-run 日志会出现：
 
@@ -136,8 +131,7 @@ strategy command generated (dry-run)
 ```bash
 RUST_LOG=debug cargo run -p hft-app -- \
   app/examples/local.toml \
-  --execute \
-  BTCUSDT
+  --execute
 ```
 
 `--execute` 是硬安全开关：
@@ -188,6 +182,8 @@ cargo run -p hft-app --bin collector -- \
   data/btcusdt.csv \
   BTCUSDT
 ```
+
+Collector 不依赖 `[[strategies]]`，因此仍显式接收采集 symbol 和输出文件路径。
 
 Collector 不启动 User Data Stream，也不需要 API Key。
 
@@ -251,13 +247,13 @@ cargo build --release --workspace
 Dry-run：
 
 ```bash
-./target/release/hft-app app/examples/local.toml BTCUSDT
+./target/release/hft-app app/examples/local.toml
 ```
 
 Testnet execute：
 
 ```bash
-./target/release/hft-app app/examples/local.toml --execute BTCUSDT
+./target/release/hft-app app/examples/local.toml --execute
 ```
 
 Collector：
