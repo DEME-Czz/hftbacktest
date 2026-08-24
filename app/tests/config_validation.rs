@@ -79,3 +79,22 @@ fn non_finite_risk_limits_are_rejected_at_startup() {
     let error = AppConfig::parse_and_validate(&raw, RunMode::DryRun).unwrap_err();
     assert_eq!(error.to_string(), "risk limits must be finite and positive");
 }
+
+#[test]
+fn execute_rejects_credentials_sent_to_untrusted_https_hosts() {
+    let raw = r#"
+public_stream_url = "wss://stream.attacker.example/ws"
+private_stream_url = "wss://stream.attacker.example/ws/{listen_key}"
+api_url = "https://api.attacker.example"
+order_prefix = "config-test"
+api_key = "configured-key"
+secret = "configured-secret"
+"#;
+
+    let error = AppConfig::parse_and_validate(raw, RunMode::Execute).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "execute mode requires a matched Binance endpoint environment"
+    );
+}
