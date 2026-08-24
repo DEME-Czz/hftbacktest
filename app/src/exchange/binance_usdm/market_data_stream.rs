@@ -31,6 +31,9 @@ use crate::{
     ports::PublishEvent,
 };
 
+const MAX_PENDING_DEPTH_MESSAGES: usize = 4_096;
+type SnapshotResult = Result<rest::Depth, BinanceFuturesError>;
+
 pub struct MarketDataStream {
     client: BinanceFuturesClient,
     ev_tx: UnboundedSender<PublishEvent>,
@@ -38,8 +41,8 @@ pub struct MarketDataStream {
     symbol_rx: Receiver<String>,
     pending_depth_messages: HashMap<String, Vec<stream::Depth>>,
     prev_u: HashMap<String, i64>,
-    rest_tx: UnboundedSender<(String, rest::Depth)>,
-    rest_rx: UnboundedReceiver<(String, rest::Depth)>,
+    rest_tx: UnboundedSender<(String, SnapshotResult)>,
+    rest_rx: UnboundedReceiver<(String, SnapshotResult)>,
 }
 
 impl MarketDataStream {
@@ -66,14 +69,22 @@ impl MarketDataStream {
         let client = self.client.clone();
         let rest_tx = self.rest_tx.clone();
         tokio::spawn(async move {
-            match client.get_depth(&symbol).await {
-                Ok(depth) => {
-                    let _ = rest_tx.send((symbol, depth));
+            let mut last_error = None;
+            for delay_ms in [0_u64, 100, 250, 500, 1_000] {
+                if delay_ms > 0 {
+                    time::sleep(Duration::from_millis(delay_ms)).await;
                 }
-                Err(error) => {
-                    error!(?error, %symbol, "failed to fetch Binance depth snapshot");
+                match client.get_depth(&symbol).await {
+                    Ok(depth) => {
+                        let _ = rest_tx.send((symbol, Ok(depth)));
+                        return;
+                    }
+                    Err(error) => last_error = Some(error),
                 }
             }
+            let error = last_error.unwrap_or(BinanceFuturesError::ConnectionInterrupted);
+            error!(?error, %symbol, "Binance depth snapshot retries exhausted");
+            let _ = rest_tx.send((symbol, Err(error)));
         });
     }
 
@@ -177,6 +188,9 @@ impl MarketDataStream {
             .entry(symbol.clone())
             .or_default();
         let request_snapshot = pending.is_empty();
+        if pending.len() >= MAX_PENDING_DEPTH_MESSAGES {
+            return Err(BinanceFuturesError::DepthBufferOverflow);
+        }
         pending.push(data);
         if request_snapshot {
             self.request_snapshot(symbol);
@@ -314,8 +328,8 @@ impl MarketDataStream {
 
         loop {
             select! {
-                Some((symbol, data)) = self.rest_rx.recv() => {
-                    self.process_snapshot(symbol, data)?;
+                Some((symbol, result)) = self.rest_rx.recv() => {
+                    self.process_snapshot(symbol, result?)?;
                 }
                 _ = ping_checker.tick() => {
                     if last_ping.elapsed() > Duration::from_secs(300) {

@@ -70,6 +70,8 @@ pub enum BinanceFuturesError {
     UnsupportedPositionMode,
     #[error("InvalidAccountState")]
     InvalidAccountState,
+    #[error("DepthBufferOverflow")]
+    DepthBufferOverflow,
     #[error("OrderNotFound")]
     OrderNotFound,
     #[error("Tungstenite: {0:?}")]
