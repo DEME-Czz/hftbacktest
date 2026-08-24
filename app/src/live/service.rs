@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Result, bail};
 use hftbacktest::{strategy::BuiltinStrategy, types::LiveEvent};
 use tokio::{select, signal, sync::mpsc::unbounded_channel, time};
-use tracing::{info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 use super::{
     config::LiveStrategyConfig,
@@ -22,10 +22,14 @@ pub type StrategyRuntimes = HashMap<String, LiveStrategyRuntime<BuiltinStrategy>
 #[derive(Default)]
 struct AccountReadiness {
     symbols: HashSet<String>,
+    halted: HashSet<String>,
 }
 
 impl AccountReadiness {
     fn reconcile(&mut self, symbol: &str) -> bool {
+        if self.halted.contains(symbol) {
+            return false;
+        }
         self.symbols.insert(symbol.to_string())
     }
 
@@ -35,6 +39,11 @@ impl AccountReadiness {
 
     fn contains(&self, symbol: &str) -> bool {
         self.symbols.contains(symbol)
+    }
+
+    fn halt(&mut self, symbol: &str) {
+        self.symbols.remove(symbol);
+        self.halted.insert(symbol.to_string());
     }
 }
 
@@ -170,6 +179,10 @@ impl<C: LiveConnector> LiveService<C> {
                         {
                             info!(%symbol, "position and open-order state synchronized");
                         }
+                    }
+                    Some(PublishEvent::ExecutionUncertain { symbol }) => {
+                        account_readiness.halt(&symbol);
+                        error!(%symbol, "execution halted: order submission outcome is unresolved");
                     }
                     None => break,
                 }

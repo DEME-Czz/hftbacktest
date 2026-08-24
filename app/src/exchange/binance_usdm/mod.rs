@@ -101,6 +101,23 @@ impl From<BinanceFuturesError> for Value {
     }
 }
 
+impl BinanceFuturesError {
+    fn submission_is_ambiguous(&self) -> bool {
+        match self {
+            Self::ReqError(_) => true,
+            Self::OrderError {
+                code: -1006 | -1007,
+                ..
+            } => true,
+            Self::OrderError { code: -1000, msg } => {
+                let message = msg.to_ascii_lowercase();
+                message.contains("unknown") || message.contains("execution status")
+            }
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Deserialize)]
 pub struct BinanceConfig {
     pub public_stream_url: String,
@@ -295,7 +312,43 @@ impl ExecutionVenue for BinanceFutures {
                             }
                         }
                         Err(error) => {
-                            if let Some(order) = lock_recover(&order_manager)
+                            if error.submission_is_ambiguous() {
+                                let mut confirmed = None;
+                                for delay_ms in [50_u64, 150, 300] {
+                                    match client.query_order(&client_order_id, &symbol).await {
+                                        Ok(Some(response)) => {
+                                            confirmed = Some(response);
+                                            break;
+                                        }
+                                        Ok(None) | Err(_) => {
+                                            tokio::time::sleep(std::time::Duration::from_millis(
+                                                delay_ms,
+                                            ))
+                                            .await;
+                                        }
+                                    }
+                                }
+                                if let Some(response) = confirmed {
+                                    if let Some(order) = lock_recover(&order_manager)
+                                        .update_from_rest(&client_order_id, &response)
+                                    {
+                                        let _ =
+                                            tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                                                symbol,
+                                                order,
+                                            }));
+                                    }
+                                    return;
+                                }
+                                error!(
+                                    %symbol,
+                                    %client_order_id,
+                                    "order submission outcome is unresolved; execution latched off"
+                                );
+                                let _ = tx.send(PublishEvent::ExecutionUncertain {
+                                    symbol: symbol.clone(),
+                                });
+                            } else if let Some(order) = lock_recover(&order_manager)
                                 .update_submit_fail(&client_order_id, &error)
                             {
                                 let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {

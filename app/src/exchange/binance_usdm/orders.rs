@@ -423,7 +423,9 @@ impl OrderManager {
     pub fn active_orders(&self, symbol: &str) -> Vec<Order> {
         self.orders
             .values()
-            .filter(|order| order.symbol == symbol && order.order.active())
+            .filter(|order| {
+                order.symbol == symbol && (order.order.active() || order.order.pending())
+            })
             .map(|order| order.order.clone())
             .collect()
     }

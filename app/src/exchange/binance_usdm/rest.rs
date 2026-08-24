@@ -247,6 +247,23 @@ impl BinanceFuturesClient {
         }
     }
 
+    pub async fn query_order(
+        &self,
+        client_order_id: &str,
+        symbol: &str,
+    ) -> Result<Option<OrderResponse>, BinanceFuturesError> {
+        let query = format!("symbol={symbol}&origClientOrderId={client_order_id}");
+        let response: OrderResponseResult = self.get("/fapi/v1/order", query).await?;
+        match response {
+            OrderResponseResult::Ok(response) => Ok(Some(*response)),
+            OrderResponseResult::Err(error) if error.code == -2013 => Ok(None),
+            OrderResponseResult::Err(error) => Err(BinanceFuturesError::OrderError {
+                code: error.code,
+                msg: error.msg,
+            }),
+        }
+    }
+
     pub async fn get_position_information(
         &self,
     ) -> Result<Vec<PositionInformationV3>, BinanceFuturesError> {

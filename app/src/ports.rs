@@ -35,6 +35,11 @@ pub enum PublishEvent {
     AccountSnapshotReady {
         symbol: String,
     },
+    /// The venue may have accepted a submit whose response could not be confirmed. Execution for
+    /// the symbol must remain latched off until a clean restart/recovery.
+    ExecutionUncertain {
+        symbol: String,
+    },
 }
 
 /// Public market-data side of an exchange adapter.
