@@ -117,6 +117,21 @@ mod tests {
     }
 
     #[test]
+    fn market_batch_cannot_hide_a_gap_that_already_crossed_the_deadline() {
+        let mut safety = SafetyState::new(1_000, ["btcusdt"]);
+        safety.on_market_batch("btcusdt", 0, false);
+
+        // The timer has not fired yet, but the old market is already beyond its deadline.
+        safety.on_market_batch("btcusdt", 1_000, false);
+        assert!(safety.is_halted("btcusdt"));
+        assert!(!safety.can_submit("btcusdt", 1_000));
+
+        // Recovery requires another genuinely fresh batch after the stale transition.
+        safety.on_market_batch("btcusdt", 1_001, false);
+        assert!(safety.can_submit("btcusdt", 1_001));
+    }
+
+    #[test]
     fn kill_switch_latches_every_symbol_until_process_restart() {
         let mut safety = SafetyState::new(1_000, ["btcusdt", "ethusdt"]);
         safety.on_market_batch("btcusdt", 0, false);
