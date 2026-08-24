@@ -206,7 +206,7 @@ impl OrderManager {
         // .ok_or(BinanceFuturesError::OrderNotFound)?;
 
         let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-        if resp.update_time * 1_000_000 >= order_ext.order.exch_timestamp {
+        if !already_removed && resp.update_time * 1_000_000 >= order_ext.order.exch_timestamp {
             order_ext.order.qty = resp.orig_qty;
             order_ext.order.leaves_qty = resp.orig_qty - resp.cum_qty;
             order_ext.order.side = resp.side;
@@ -442,7 +442,10 @@ impl OrderManager {
         self.orders
             .values()
             .filter(|order| {
-                order.symbol == symbol && (order.order.active() || order.order.pending())
+                order.symbol == symbol
+                    && !order.removed_by_ws
+                    && !order.removed_by_rest
+                    && (order.order.active() || order.order.pending())
             })
             .map(|order| order.order.clone())
             .collect()
