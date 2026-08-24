@@ -26,6 +26,7 @@ pub type StrategyRuntimes = HashMap<String, LiveStrategyRuntime<BuiltinStrategy>
 struct AccountReadiness {
     symbols: HashSet<String>,
     halted: HashSet<String>,
+    recovered_snapshots: HashSet<String>,
     position_timestamps: HashMap<String, i64>,
     pending_position_after_fill: HashMap<String, i64>,
 }
@@ -34,8 +35,11 @@ impl AccountReadiness {
     fn reconcile(&mut self, symbol: &str) -> bool {
         if self.halted.contains(symbol)
             || !self.position_timestamps.contains_key(symbol)
-            || self.pending_position_after_fill.contains_key(symbol)
         {
+            return false;
+        }
+        self.recovered_snapshots.insert(symbol.to_string());
+        if self.pending_position_after_fill.contains_key(symbol) {
             return false;
         }
         self.symbols.insert(symbol.to_string())
@@ -55,7 +59,7 @@ impl AccountReadiness {
             .is_some_and(|required| exch_ts >= *required);
         if position_is_current {
             self.pending_position_after_fill.remove(symbol);
-            if !self.halted.contains(symbol) {
+            if self.recovered_snapshots.contains(symbol) && !self.halted.contains(symbol) {
                 self.symbols.insert(symbol.to_string());
             }
         }
@@ -81,6 +85,7 @@ impl AccountReadiness {
 
     fn disconnect(&mut self) {
         self.symbols.clear();
+        self.recovered_snapshots.clear();
         self.position_timestamps.clear();
         self.pending_position_after_fill.clear();
     }
