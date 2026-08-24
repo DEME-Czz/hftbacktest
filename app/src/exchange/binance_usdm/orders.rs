@@ -316,3 +316,86 @@ impl OrderManager {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::OrderManager;
+    use crate::exchange::binance_usdm::{
+        BinanceFuturesError,
+        id::ClientOrderIdCodec,
+        protocol::rest::OrderResponse,
+    };
+
+    fn open_order(client_order_id: &str) -> OrderResponse {
+        serde_json::from_value(json!({
+            "clientOrderId": client_order_id,
+            "cumQty": "0.250",
+            "cumQuote": "25.0",
+            "executedQty": "0.250",
+            "orderId": 123,
+            "avgPrice": "100.0",
+            "origQty": "1.000",
+            "price": "100.0",
+            "reduceOnly": false,
+            "side": "BUY",
+            "positionSide": "BOTH",
+            "status": "PARTIALLY_FILLED",
+            "stopPrice": "0",
+            "closePosition": false,
+            "symbol": "BTCUSDT",
+            "timeInForce": "GTC",
+            "type": "LIMIT",
+            "origType": "LIMIT",
+            "updateTime": 1234,
+            "workingType": "CONTRACT_PRICE",
+            "priceProtect": false,
+            "priceMatch": "NONE",
+            "selfTradePreventionMode": "NONE",
+            "goodTillDate": 0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn recovery_restores_owned_orders_and_ignores_foreign_orders() {
+        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
+        let owned_id = codec.encode(42);
+        let mut manager = OrderManager::new(codec);
+
+        let recovered = manager
+            .reconcile_open_orders(
+                "btcusdt",
+                0.1,
+                &[open_order(&owned_id), open_order("other-v1-1-AbCd12")],
+            )
+            .unwrap();
+
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].order_id, 42);
+        assert_eq!(recovered[0].qty, 1.0);
+        assert_eq!(recovered[0].leaves_qty, 0.75);
+        assert_eq!(manager.get_client_order_id("btcusdt", 42), Some(owned_id));
+    }
+
+    #[test]
+    fn recovery_fails_closed_for_a_malformed_owned_identifier() {
+        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
+        let mut manager = OrderManager::new(codec);
+
+        let error = manager
+            .reconcile_open_orders(
+                "btcusdt",
+                0.1,
+                &[open_order("strategy-a-v1-broken-AbCd12")],
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            BinanceFuturesError::MalformedClientOrderId
+        ));
+        assert!(manager.active_orders("btcusdt").is_empty());
+    }
+}
