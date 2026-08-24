@@ -25,7 +25,9 @@ impl RunMode {
 
 pub enum PublishEvent {
     BatchStart,
-    BatchEnd,
+    BatchEnd {
+        received_at: std::time::Instant,
+    },
     LiveEvent(hftbacktest::types::LiveEvent),
     /// The private account stream is unavailable. Live execution must fail closed until each
     /// configured symbol has been reconciled again.

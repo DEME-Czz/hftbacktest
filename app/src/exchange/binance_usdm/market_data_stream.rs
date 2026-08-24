@@ -148,7 +148,9 @@ impl MarketDataStream {
             }))?;
         }
 
-        self.publish(PublishEvent::BatchEnd)
+        self.publish(PublishEvent::BatchEnd {
+            received_at: Instant::now(),
+        })
     }
 
     fn emit_depth_update(&self, data: &stream::Depth) -> Result<(), BinanceFuturesError> {

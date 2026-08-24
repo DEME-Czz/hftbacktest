@@ -242,7 +242,7 @@ impl<C: LiveConnector> LiveService<C> {
                             warn!(?error, "Binance live runtime error");
                         }
                     }
-                    Some(PublishEvent::BatchEnd) => {
+                    Some(PublishEvent::BatchEnd { received_at: _ }) => {
                         for runtime in self.runtimes.values_mut() {
                             if !runtime.take_depth_dirty() {
                                 continue;
@@ -557,7 +557,10 @@ mod tests {
             }))
             .unwrap();
         }
-        tx.send(PublishEvent::BatchEnd).unwrap();
+        tx.send(PublishEvent::BatchEnd {
+            received_at: std::time::Instant::now(),
+        })
+        .unwrap();
     }
 
     impl Default for PositionOnlyConnector {
@@ -614,7 +617,10 @@ mod tests {
                 }))
                 .unwrap();
             }
-            tx.send(PublishEvent::BatchEnd).unwrap();
+            tx.send(PublishEvent::BatchEnd {
+                received_at: std::time::Instant::now(),
+            })
+            .unwrap();
         }
 
         fn open_orders(&self, _symbol: &str) -> Vec<Order> {
