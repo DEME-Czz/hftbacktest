@@ -537,7 +537,12 @@ mod tests {
         fn cancel(&self, _symbol: String, _order: Order, _tx: UnboundedSender<PublishEvent>) {}
     }
 
-    fn send_depth_batch(tx: &UnboundedSender<PublishEvent>, timestamp: i64, quantity: f64) {
+    fn send_depth_batch_at(
+        tx: &UnboundedSender<PublishEvent>,
+        timestamp: i64,
+        quantity: f64,
+        received_at: std::time::Instant,
+    ) {
         for (ev, px) in [
             (LOCAL_BID_DEPTH_EVENT, 100.0),
             (LOCAL_ASK_DEPTH_EVENT, 101.0),
@@ -558,9 +563,13 @@ mod tests {
             .unwrap();
         }
         tx.send(PublishEvent::BatchEnd {
-            received_at: std::time::Instant::now(),
+            received_at,
         })
         .unwrap();
+    }
+
+    fn send_depth_batch(tx: &UnboundedSender<PublishEvent>, timestamp: i64, quantity: f64) {
+        send_depth_batch_at(tx, timestamp, quantity, std::time::Instant::now());
     }
 
     impl Default for PositionOnlyConnector {
@@ -873,6 +882,55 @@ mod tests {
                     exch_ts: 200,
                 }))
                 .unwrap();
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn queued_market_batch_uses_receive_time_for_staleness() {
+        let connector = ManualConnector::default();
+        let event_tx = connector.event_tx.clone();
+        let submitted = connector.submitted.clone();
+        let service = LiveService::with_safety(
+            connector,
+            grid_runtimes(),
+            RiskConfig::default(),
+            SafetyConfig {
+                stale_market_timeout_ms: 20,
+                ..SafetyConfig::default()
+            },
+            RunMode::Execute,
+        );
+
+        service
+            .run_until(async move {
+                let tx = loop {
+                    if let Some(tx) = event_tx.lock().unwrap().clone() {
+                        break tx;
+                    }
+                    tokio::task::yield_now().await;
+                };
+                tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
+                    symbol: "btcusdt".to_string(),
+                    qty: 0.0,
+                    exch_ts: 100,
+                }))
+                .unwrap();
+                tx.send(PublishEvent::AccountSnapshotReady {
+                    symbol: "btcusdt".to_string(),
+                })
+                .unwrap();
+                let received_at = std::time::Instant::now()
+                    .checked_sub(Duration::from_millis(50))
+                    .unwrap();
+                send_depth_batch_at(&tx, 100, 10.0, received_at);
+                time::sleep(Duration::from_millis(20)).await;
+
+                assert!(
+                    submitted.lock().unwrap().is_empty(),
+                    "a queued batch older than the stale deadline must not authorize orders"
+                );
             })
             .await
             .unwrap();
