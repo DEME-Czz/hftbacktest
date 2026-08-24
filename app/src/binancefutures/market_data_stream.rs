@@ -331,3 +331,76 @@ impl MarketDataStream {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        time::Duration,
+    };
+
+    use futures_util::StreamExt;
+    use tokio::{
+        net::TcpListener,
+        sync::{broadcast, mpsc::unbounded_channel},
+        time::timeout,
+    };
+    use tokio_tungstenite::accept_async;
+
+    use super::MarketDataStream;
+    use crate::binancefutures::rest::BinanceFuturesClient;
+
+    #[test]
+    fn closed_event_sink_does_not_panic() {
+        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "");
+        let (event_tx, event_rx) = unbounded_channel();
+        drop(event_rx);
+        let (symbol_tx, _) = broadcast::channel(4);
+        let stream = MarketDataStream::new(client, event_tx, symbol_tx.subscribe());
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            stream.emit_depth_levels(
+                "btcusdt",
+                1,
+                vec![("100.0".to_string(), "1.0".to_string())],
+                vec![("101.0".to_string(), "1.0".to_string())],
+            );
+        }));
+
+        assert!(result.is_ok(), "a closed event sink must not panic the stream task");
+    }
+
+    #[tokio::test]
+    async fn reconnect_replays_every_registered_symbol() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut subscriptions = Vec::new();
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut websocket = accept_async(socket).await.unwrap();
+                let subscribed = timeout(Duration::from_millis(500), websocket.next())
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(Result::ok)
+                    .is_some();
+                subscriptions.push(subscribed);
+                websocket.close(None).await.unwrap();
+            }
+            subscriptions
+        });
+
+        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "");
+        let (event_tx, _event_rx) = unbounded_channel();
+        let (symbol_tx, _) = broadcast::channel(4);
+        let mut stream = MarketDataStream::new(client, event_tx, symbol_tx.subscribe());
+        symbol_tx.send("btcusdt".to_string()).unwrap();
+
+        let url = format!("ws://{address}");
+        assert!(stream.connect(&url).await.is_err());
+        assert!(stream.connect(&url).await.is_err());
+
+        assert_eq!(server.await.unwrap(), vec![true, true]);
+    }
+}

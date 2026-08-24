@@ -78,8 +78,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use hftbacktest::{
-        strategy::{BuiltinStrategy, BuiltinStrategyConfig, GridConfig},
-        types::{Event, LiveEvent, Order, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT},
+        strategy::{BuiltinStrategy, BuiltinStrategyConfig, GridConfig, StrategyCommand},
+        types::{
+            Event, LiveEvent, OrdType, Order, Side, TimeInForce, LOCAL_ASK_DEPTH_EVENT,
+            LOCAL_BID_DEPTH_EVENT,
+        },
     };
     use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
@@ -191,5 +194,48 @@ mod tests {
         executor.execute(&connector, &tx, &mut runtime, commands);
         assert!(connector.submitted.lock().unwrap().is_empty());
         assert_eq!(runtime.open_orders(), 0);
+    }
+
+    #[test]
+    fn active_order_exposure_counts_toward_position_limit() {
+        let connector = FakeConnector::default();
+        let (tx, _rx) = unbounded_channel();
+        let executor = LiveExecutor::new(
+            true,
+            RiskGate::new(RiskConfig {
+                max_order_qty: 0.01,
+                max_order_notional: 1_000.0,
+                max_position: 0.003,
+                max_open_orders: 4,
+            }),
+        );
+        let mut runtime = runtime();
+        runtime.stage_submit(
+            1,
+            99.0,
+            0.0025,
+            Side::Buy,
+            TimeInForce::GTX,
+            OrdType::Limit,
+        );
+
+        executor.execute(
+            &connector,
+            &tx,
+            &mut runtime,
+            vec![StrategyCommand::Submit {
+                order_id: 2,
+                price: 98.0,
+                qty: 0.001,
+                side: Side::Buy,
+                time_in_force: TimeInForce::GTX,
+                order_type: OrdType::Limit,
+            }],
+        );
+
+        assert!(
+            connector.submitted.lock().unwrap().is_empty(),
+            "same-side active order quantity must be included in max_position"
+        );
     }
 }
