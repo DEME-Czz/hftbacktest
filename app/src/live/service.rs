@@ -727,6 +727,29 @@ mod tests {
         assert!(readiness.contains("btcusdt"));
     }
 
+    #[test]
+    fn expired_ioc_with_a_last_fill_waits_for_the_matching_position() {
+        let mut readiness = AccountReadiness::default();
+        readiness.observe_position("btcusdt", 100, true);
+        assert!(readiness.reconcile("btcusdt"));
+        let mut expired = Order::new(
+            14,
+            1_000,
+            0.1,
+            0.001,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::IOC,
+        );
+        expired.status = hftbacktest::types::Status::Expired;
+        expired.exec_qty = 0.0005;
+        expired.exch_timestamp = 200;
+
+        readiness.observe_order("btcusdt", &expired);
+
+        assert!(!readiness.contains("btcusdt"));
+    }
+
     #[tokio::test]
     async fn position_without_order_recovery_never_enables_execution() {
         let connector = PositionOnlyConnector::default();
