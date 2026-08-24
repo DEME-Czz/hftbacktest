@@ -187,3 +187,27 @@ impl Strategy<HashMapMarketDepth> for NoopStrategy {
         Vec::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use hftbacktest::types::LiveEvent;
+
+    use super::{LiveStrategyRuntime, NoopStrategy};
+
+    #[test]
+    fn stale_position_update_cannot_roll_back_a_newer_snapshot() {
+        let mut runtime = LiveStrategyRuntime::new("btcusdt", 0.1, 0.001, NoopStrategy);
+        runtime.apply(&LiveEvent::Position {
+            symbol: "btcusdt".to_string(),
+            qty: 2.0,
+            exch_ts: 200,
+        });
+        runtime.apply(&LiveEvent::Position {
+            symbol: "btcusdt".to_string(),
+            qty: 1.0,
+            exch_ts: 100,
+        });
+
+        assert_eq!(runtime.position(), 2.0);
+    }
+}
