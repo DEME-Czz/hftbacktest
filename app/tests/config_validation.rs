@@ -98,3 +98,19 @@ secret = "configured-secret"
         "execute mode requires a matched Binance endpoint environment"
     );
 }
+
+#[test]
+fn execute_requires_explicit_opt_in_for_loopback_endpoints() {
+    let base = r#"
+public_stream_url = "ws://127.0.0.1:18080/ws"
+private_stream_url = "ws://127.0.0.1:18081/ws/{listen_key}"
+api_url = "http://127.0.0.1:18082"
+order_prefix = "config-test"
+api_key = "configured-key"
+secret = "configured-secret"
+"#;
+
+    assert!(AppConfig::parse_and_validate(base, RunMode::Execute).is_err());
+    let explicitly_allowed = format!("{base}\nallow_test_endpoints = true\n");
+    assert!(AppConfig::parse_and_validate(&explicitly_allowed, RunMode::Execute).is_ok());
+}
