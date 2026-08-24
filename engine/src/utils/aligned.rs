@@ -171,3 +171,17 @@ impl<T, const ALIGNMENT: usize, Idx: SliceIndex<[T]>> IndexMut<Idx> for AlignedA
         &mut self.as_mut_slice()[index]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::panic;
+
+    use super::AlignedArray;
+
+    #[test]
+    fn new_rejects_alignment_smaller_than_the_element_alignment() {
+        let result = panic::catch_unwind(|| AlignedArray::<u64, 1>::new(1));
+
+        assert!(result.is_err());
+    }
+}

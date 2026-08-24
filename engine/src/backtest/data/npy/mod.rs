@@ -233,3 +233,34 @@ fn as_bytes<T>(values: &[T]) -> &[u8] {
         std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, ErrorKind};
+
+    use crate::types::Event;
+
+    use super::read_npy;
+
+    #[test]
+    fn read_npy_rejects_a_truncated_preamble() {
+        let bytes = b"\x93NUMPY\x01\x00";
+        let mut reader = Cursor::new(bytes);
+
+        let error = read_npy::<_, Event>(&mut reader, bytes.len()).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn read_npy_rejects_a_header_length_past_end_of_file() {
+        let mut bytes = b"\x93NUMPY\x01\x00".to_vec();
+        bytes.extend_from_slice(&u16::MAX.to_le_bytes());
+        bytes.resize(64, b' ');
+        let mut reader = Cursor::new(&bytes);
+
+        let error = read_npy::<_, Event>(&mut reader, bytes.len()).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+    }
+}
