@@ -67,6 +67,8 @@ pub enum BinanceFuturesError {
     InvalidOrderPrefix,
     #[error("MalformedClientOrderId")]
     MalformedClientOrderId,
+    #[error("OrderRecoveryConflict")]
+    OrderRecoveryConflict,
     #[error("OrderNotFound")]
     OrderNotFound,
     #[error("Tungstenite: {0:?}")]

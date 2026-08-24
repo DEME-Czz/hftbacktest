@@ -276,6 +276,118 @@ impl OrderManager {
             .cloned()
     }
 
+    /// Atomically adopts every open order in this strategy's client-order-id namespace.
+    /// Foreign orders are deliberately left alone. A malformed owned identifier or conflicting
+    /// local id aborts the entire snapshot so live execution remains fail-closed.
+    pub(crate) fn reconcile_open_orders(
+        &mut self,
+        symbol: &str,
+        tick_size: f64,
+        responses: &[OrderResponse],
+    ) -> Result<Vec<Order>, BinanceFuturesError> {
+        if !tick_size.is_finite() || tick_size <= 0.0 {
+            return Err(BinanceFuturesError::InvalidRequest);
+        }
+
+        let mut recovered = Vec::new();
+        let mut recovered_ids = hashbrown::HashSet::new();
+        let mut recovered_client_ids = hashbrown::HashSet::new();
+        for response in responses {
+            let order_id = match self.client_order_ids.decode(&response.client_order_id) {
+                Ok(Some(order_id)) => order_id,
+                Ok(None) => continue,
+                Err(ClientOrderIdError::Malformed | ClientOrderIdError::InvalidPrefix) => {
+                    return Err(BinanceFuturesError::MalformedClientOrderId);
+                }
+            };
+            if response.symbol != symbol
+                || !response.price.is_finite()
+                || !response.orig_qty.is_finite()
+                || !response.cum_qty.is_finite()
+                || response.orig_qty <= 0.0
+                || response.cum_qty < 0.0
+                || response.cum_qty > response.orig_qty
+                || !matches!(
+                    response.side,
+                    hftbacktest::types::Side::Buy | hftbacktest::types::Side::Sell
+                )
+                || !matches!(response.status, Status::New | Status::PartiallyFilled)
+            {
+                return Err(BinanceFuturesError::InvalidRequest);
+            }
+            if !recovered_ids.insert(order_id)
+                || !recovered_client_ids.insert(response.client_order_id.clone())
+            {
+                return Err(BinanceFuturesError::OrderRecoveryConflict);
+            }
+            if let Some(existing_client_order_id) = self
+                .order_id_map
+                .get(&RefSymbolOrderId::new(symbol, order_id))
+                && existing_client_order_id != &response.client_order_id
+            {
+                return Err(BinanceFuturesError::OrderRecoveryConflict);
+            }
+
+            let mut order = Order::new(
+                order_id,
+                (response.price / tick_size).round() as i64,
+                tick_size,
+                response.orig_qty,
+                response.side,
+                response.ty,
+                response.time_in_force,
+            );
+            order.leaves_qty = response.orig_qty - response.cum_qty;
+            order.exec_qty = response.executed_qty;
+            order.exch_timestamp = response.update_time.saturating_mul(1_000_000);
+            order.status = response.status;
+            recovered.push((response.client_order_id.clone(), order));
+        }
+
+        let snapshot_client_ids: hashbrown::HashSet<_> = recovered
+            .iter()
+            .map(|(client_order_id, _)| client_order_id.clone())
+            .collect();
+        let stale_client_ids: Vec<_> = self
+            .orders
+            .iter()
+            .filter(|(client_order_id, order)| {
+                order.symbol == symbol
+                    && order.order.active()
+                    && !snapshot_client_ids.contains(*client_order_id)
+            })
+            .map(|(client_order_id, _)| client_order_id.clone())
+            .collect();
+
+        let mut updates = Vec::with_capacity(recovered.len() + stale_client_ids.len());
+        for client_order_id in stale_client_ids {
+            if let Some(mut stale) = self.orders.remove(&client_order_id) {
+                self.order_id_map
+                    .remove(&RefSymbolOrderId::new(&stale.symbol, stale.order.order_id));
+                stale.order.status = Status::None;
+                stale.order.req = Status::None;
+                updates.push(stale.order);
+            }
+        }
+
+        for (client_order_id, order) in recovered {
+            let symbol_order_id = SymbolOrderId::new(symbol.to_string(), order.order_id);
+            self.order_id_map
+                .insert(symbol_order_id, client_order_id.clone());
+            self.orders.insert(
+                client_order_id,
+                OrderExt {
+                    symbol: symbol.to_string(),
+                    order: order.clone(),
+                    removed_by_ws: false,
+                    removed_by_rest: false,
+                },
+            );
+            updates.push(order);
+        }
+        Ok(updates)
+    }
+
     /// Due to API instability or network issues, discrepancies can occur where an order is deleted
     /// by one channel but remains active because its deletion wasn't confirmed by both channels.
     /// The gc method resolves this by removing orders that were deleted by one channel but not
@@ -323,38 +435,39 @@ mod tests {
 
     use super::OrderManager;
     use crate::exchange::binance_usdm::{
-        BinanceFuturesError,
-        id::ClientOrderIdCodec,
-        protocol::rest::OrderResponse,
+        BinanceFuturesError, id::ClientOrderIdCodec, protocol::rest::OrderResponse,
     };
 
     fn open_order(client_order_id: &str) -> OrderResponse {
-        serde_json::from_value(json!({
-            "clientOrderId": client_order_id,
-            "cumQty": "0.250",
-            "cumQuote": "25.0",
-            "executedQty": "0.250",
-            "orderId": 123,
-            "avgPrice": "100.0",
-            "origQty": "1.000",
-            "price": "100.0",
-            "reduceOnly": false,
-            "side": "BUY",
-            "positionSide": "BOTH",
-            "status": "PARTIALLY_FILLED",
-            "stopPrice": "0",
-            "closePosition": false,
-            "symbol": "BTCUSDT",
-            "timeInForce": "GTC",
-            "type": "LIMIT",
-            "origType": "LIMIT",
-            "updateTime": 1234,
-            "workingType": "CONTRACT_PRICE",
-            "priceProtect": false,
-            "priceMatch": "NONE",
-            "selfTradePreventionMode": "NONE",
-            "goodTillDate": 0
-        }))
+        serde_json::from_str(
+            &json!({
+                "clientOrderId": client_order_id,
+                "cumQty": "0.250",
+                "cumQuote": "25.0",
+                "executedQty": "0.250",
+                "orderId": 123,
+                "avgPrice": "100.0",
+                "origQty": "1.000",
+                "price": "100.0",
+                "reduceOnly": false,
+                "side": "BUY",
+                "positionSide": "BOTH",
+                "status": "PARTIALLY_FILLED",
+                "stopPrice": "0",
+                "closePosition": false,
+                "symbol": "BTCUSDT",
+                "timeInForce": "GTC",
+                "type": "LIMIT",
+                "origType": "LIMIT",
+                "updateTime": 1234,
+                "workingType": "CONTRACT_PRICE",
+                "priceProtect": false,
+                "priceMatch": "NONE",
+                "selfTradePreventionMode": "NONE",
+                "goodTillDate": 0
+            })
+            .to_string(),
+        )
         .unwrap()
     }
 
@@ -388,14 +501,11 @@ mod tests {
             .reconcile_open_orders(
                 "btcusdt",
                 0.1,
-                &[open_order("strategy-a-v1-broken-AbCd12")],
+                &[open_order("strategy-a-v1-not-base36-AbCd12")],
             )
             .unwrap_err();
 
-        assert!(matches!(
-            error,
-            BinanceFuturesError::MalformedClientOrderId
-        ));
+        assert!(matches!(error, BinanceFuturesError::MalformedClientOrderId));
         assert!(manager.active_orders("btcusdt").is_empty());
     }
 }
