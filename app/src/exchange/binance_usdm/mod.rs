@@ -422,7 +422,7 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream},
-        sync::mpsc::unbounded_channel,
+        sync::{mpsc::unbounded_channel, oneshot},
         time,
     };
 
@@ -469,6 +469,46 @@ mod tests {
         form.split('&')
             .find_map(|part| part.split_once('=').filter(|(name, _)| *name == key))
             .map(|(_, value)| value)
+    }
+
+    async fn write_order_response(
+        stream: &mut TcpStream,
+        client_order_id: &str,
+        status: &str,
+    ) {
+        let response_body = serde_json::json!({
+            "clientOrderId": client_order_id,
+            "cumQty": "0",
+            "cumQuote": "0",
+            "executedQty": "0",
+            "orderId": 123,
+            "avgPrice": "0",
+            "origQty": "1.00000",
+            "price": "100.0",
+            "reduceOnly": false,
+            "side": "BUY",
+            "positionSide": "BOTH",
+            "status": status,
+            "stopPrice": "0",
+            "closePosition": false,
+            "symbol": "BTCUSDT",
+            "timeInForce": "GTC",
+            "type": "LIMIT",
+            "origType": "LIMIT",
+            "updateTime": 1234,
+            "workingType": "CONTRACT_PRICE",
+            "priceProtect": false,
+            "priceMatch": "NONE",
+            "selfTradePreventionMode": "NONE",
+            "goodTillDate": 0
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
     }
 
     #[tokio::test]
@@ -603,5 +643,84 @@ mod tests {
         connector.submit("btcusdt".to_string(), order, 0.001, tx);
 
         assert_eq!(connector.open_orders("btcusdt").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancel_waits_until_the_in_flight_submission_is_resolved() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let server_requests = requests.clone();
+        let (post_seen_tx, post_seen_rx) = oneshot::channel();
+        let (release_post_tx, mut release_post_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut post_stream, _) = listener.accept().await.unwrap();
+            let post = read_http_request(&mut post_stream).await;
+            let client_order_id = form_value(request_body(&post), "newClientOrderId")
+                .unwrap()
+                .to_string();
+            server_requests.lock().await.push(post);
+            post_seen_tx.send(()).unwrap();
+
+            tokio::select! {
+                release = &mut release_post_rx => {
+                    release.unwrap();
+                    write_order_response(&mut post_stream, &client_order_id, "NEW").await;
+                    let (mut cancel_stream, _) = listener.accept().await.unwrap();
+                    let cancel = read_http_request(&mut cancel_stream).await;
+                    server_requests.lock().await.push(cancel);
+                    write_order_response(&mut cancel_stream, &client_order_id, "CANCELED").await;
+                }
+                accepted = listener.accept() => {
+                    let (mut cancel_stream, _) = accepted.unwrap();
+                    let cancel = read_http_request(&mut cancel_stream).await;
+                    server_requests.lock().await.push(cancel);
+                    write_order_response(&mut cancel_stream, &client_order_id, "CANCELED").await;
+                    release_post_rx.await.unwrap();
+                    write_order_response(&mut post_stream, &client_order_id, "NEW").await;
+                }
+            }
+        });
+
+        let connector = BinanceFutures::new(BinanceConfig {
+            public_stream_url: "ws://127.0.0.1/".to_string(),
+            private_stream_url: "ws://127.0.0.1/{listen_key}".to_string(),
+            api_url: format!("http://{address}"),
+            order_prefix: "strategy-a".to_string(),
+            api_key: "key".to_string(),
+            secret: "secret".to_string(),
+            allow_test_endpoints: true,
+        })
+        .unwrap();
+        let mut order = Order::new(
+            85,
+            1_000,
+            0.1,
+            1.0,
+            Side::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        );
+        order.req = Status::New;
+        let (tx, _rx) = unbounded_channel();
+
+        connector.submit("btcusdt".to_string(), order.clone(), 0.001, tx.clone());
+        post_seen_rx.await.unwrap();
+        connector.cancel("btcusdt".to_string(), order, tx);
+
+        time::sleep(Duration::from_millis(75)).await;
+        assert_eq!(
+            requests.lock().await.len(),
+            1,
+            "DELETE must not race ahead of the unresolved POST"
+        );
+        release_post_tx.send(()).unwrap();
+        time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+        let requests = requests.lock().await;
+        assert!(requests[0].starts_with("POST /fapi/v1/order "));
+        assert!(requests[1].starts_with("DELETE /fapi/v1/order "));
     }
 }
