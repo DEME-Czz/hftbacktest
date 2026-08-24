@@ -109,10 +109,7 @@ impl<C: LiveConnector> LiveService<C> {
     }
 
     pub async fn run(self) -> Result<()> {
-        self.run_until(async {
-            let _ = signal::ctrl_c().await;
-        })
-        .await
+        self.run_until(shutdown_signal()).await
     }
 
     async fn run_until<F>(mut self, shutdown: F) -> Result<()>
@@ -164,8 +161,7 @@ impl<C: LiveConnector> LiveService<C> {
             select! {
                 _ = &mut shutdown => {
                     info!("shutdown requested");
-                    self.cancel_before_shutdown(&tx).await;
-                    break;
+                    return self.cancel_before_shutdown(&tx).await;
                 }
                 event = rx.recv() => match event {
                     Some(PublishEvent::LiveEvent(live)) => {
@@ -271,9 +267,12 @@ impl<C: LiveConnector> LiveService<C> {
         Ok(())
     }
 
-    async fn cancel_before_shutdown(&self, tx: &tokio::sync::mpsc::UnboundedSender<PublishEvent>) {
+    async fn cancel_before_shutdown(
+        &self,
+        tx: &tokio::sync::mpsc::UnboundedSender<PublishEvent>,
+    ) -> Result<()> {
         if !self.mode.allows_trading() {
-            return;
+            return Ok(());
         }
 
         let active_orders = self
@@ -288,7 +287,7 @@ impl<C: LiveConnector> LiveService<C> {
             })
             .collect::<Vec<_>>();
         if active_orders.is_empty() {
-            return;
+            return Ok(());
         }
 
         info!(
@@ -299,7 +298,8 @@ impl<C: LiveConnector> LiveService<C> {
             self.connector.cancel(symbol, order, tx.clone());
         }
 
-        let deadline = time::Instant::now() + Duration::from_secs(2);
+        let deadline =
+            time::Instant::now() + Duration::from_millis(self.safety.shutdown_cancel_timeout_ms);
         loop {
             let remaining = self
                 .runtimes
@@ -307,14 +307,10 @@ impl<C: LiveConnector> LiveService<C> {
                 .map(|symbol| self.connector.open_orders(symbol).len())
                 .sum::<usize>();
             if remaining == 0 {
-                return;
+                return Ok(());
             }
             if time::Instant::now() >= deadline {
-                warn!(
-                    remaining,
-                    "shutdown timed out before all order cancellations were confirmed"
-                );
-                return;
+                bail!("shutdown timed out with {remaining} unconfirmed strategy order(s)");
             }
             time::sleep(Duration::from_millis(50)).await;
         }
@@ -350,6 +346,24 @@ impl<C: LiveConnector> LiveService<C> {
 
 fn elapsed_ms(started_at: time::Instant) -> u64 {
     u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+#[cfg(unix)]
+async fn shutdown_signal() {
+    let Ok(mut terminate) = signal::unix::signal(signal::unix::SignalKind::terminate()) else {
+        error!("failed to install SIGTERM handler; waiting for SIGINT only");
+        let _ = signal::ctrl_c().await;
+        return;
+    };
+    tokio::select! {
+        _ = signal::ctrl_c() => {}
+        _ = terminate.recv() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    let _ = signal::ctrl_c().await;
 }
 
 fn kill_switch_is_active(path: Option<&std::path::Path>) -> bool {
@@ -595,6 +609,7 @@ mod tests {
             SafetyConfig {
                 stale_market_timeout_ms: 20,
                 kill_switch_file: None,
+                ..SafetyConfig::default()
             },
             RunMode::Execute,
         );
@@ -642,6 +657,7 @@ mod tests {
             SafetyConfig {
                 stale_market_timeout_ms: 5_000,
                 kill_switch_file: Some(kill_switch.clone()),
+                ..SafetyConfig::default()
             },
             RunMode::Execute,
         );
@@ -675,10 +691,14 @@ mod tests {
         );
         order.status = hftbacktest::types::Status::New;
         connector.open_orders.lock().unwrap().push(order);
-        let service = LiveService::new(
+        let service = LiveService::with_safety(
             connector,
             grid_runtimes(),
             RiskConfig::default(),
+            SafetyConfig {
+                shutdown_cancel_timeout_ms: 25,
+                ..SafetyConfig::default()
+            },
             RunMode::Execute,
         );
 

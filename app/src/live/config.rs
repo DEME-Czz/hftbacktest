@@ -20,10 +20,16 @@ pub struct SafetyConfig {
     pub stale_market_timeout_ms: u64,
     #[serde(default)]
     pub kill_switch_file: Option<PathBuf>,
+    #[serde(default = "default_shutdown_cancel_timeout_ms")]
+    pub shutdown_cancel_timeout_ms: u64,
 }
 
 fn default_stale_market_timeout_ms() -> u64 {
     5_000
+}
+
+fn default_shutdown_cancel_timeout_ms() -> u64 {
+    10_000
 }
 
 impl Default for SafetyConfig {
@@ -31,6 +37,7 @@ impl Default for SafetyConfig {
         Self {
             stale_market_timeout_ms: default_stale_market_timeout_ms(),
             kill_switch_file: None,
+            shutdown_cancel_timeout_ms: default_shutdown_cancel_timeout_ms(),
         }
     }
 }
@@ -38,6 +45,7 @@ impl Default for SafetyConfig {
 impl SafetyConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.stale_market_timeout_ms == 0
+            || self.shutdown_cancel_timeout_ms == 0
             || self
                 .kill_switch_file
                 .as_ref()
