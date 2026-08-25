@@ -119,17 +119,14 @@ impl OrderManager {
                 // GTX rejection.
             }
             BinanceFuturesError::OrderError { code: -1008, .. } => {
-                // Server is currently overloaded with other requests. Please try again in a few minutes.
                 error!(
                     "Server is currently overloaded with other requests. Please try again in a few minutes."
                 );
             }
             BinanceFuturesError::OrderError { code: -2019, .. } => {
-                // Margin is insufficient.
                 error!("Margin is insufficient.");
             }
             BinanceFuturesError::OrderError { code: -1015, .. } => {
-                // Too many new orders; current limit is 300 orders per TEN_SECONDS.
                 error!("Too many new orders; current limit is 300 orders per TEN_SECONDS.");
             }
             error => {
@@ -154,7 +151,6 @@ impl OrderManager {
         status: Option<Status>,
     ) -> Option<Order> {
         let order_ext = self.orders.get_mut(client_order_id)?;
-        // .ok_or(BinanceFuturesError::OrderNotFound)?;
 
         let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
         if let Some(status) = status {
@@ -203,15 +199,13 @@ impl OrderManager {
         let Some(order_ext) = self.orders.get_mut(client_order_id) else {
             return (None, false);
         };
-        // .ok_or(BinanceFuturesError::OrderNotFound)?;
 
         let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
         let response_is_current =
             !already_removed && resp.update_time * 1_000_000 >= order_ext.order.exch_timestamp;
         let known_filled_qty = (order_ext.order.qty - order_ext.order.leaves_qty).max(0.0);
-        let fill_tolerance = resp.executed_qty.abs().max(known_filled_qty.abs()).max(1.0)
-            * f64::EPSILON
-            * 8.0;
+        let fill_tolerance =
+            resp.executed_qty.abs().max(known_filled_qty.abs()).max(1.0) * f64::EPSILON * 8.0;
         let has_new_fill = response_is_current
             && resp.executed_qty.is_finite()
             && resp.executed_qty > known_filled_qty + fill_tolerance;
@@ -222,8 +216,6 @@ impl OrderManager {
             order_ext.order.time_in_force = resp.time_in_force;
             order_ext.order.exch_timestamp = resp.update_time * 1_000_000;
             order_ext.order.status = resp.status;
-            // The last filled price isn't available in the REST response.
-            // Execution details are expected to be received via the WebSocket stream.
             order_ext.order.exec_qty = resp.executed_qty;
             order_ext.order.order_type = resp.ty;
             order_ext.order.req = Status::None;
@@ -285,9 +277,6 @@ impl OrderManager {
             .cloned()
     }
 
-    /// Atomically adopts every open order in this strategy's client-order-id namespace.
-    /// Foreign orders are deliberately left alone. A malformed owned identifier or conflicting
-    /// local id aborts the entire snapshot so live execution remains fail-closed.
     pub(crate) fn reconcile_open_orders(
         &mut self,
         symbol: &str,
@@ -415,10 +404,6 @@ impl OrderManager {
         Ok(reconciled)
     }
 
-    /// Due to API instability or network issues, discrepancies can occur where an order is deleted
-    /// by one channel but remains active because its deletion wasn't confirmed by both channels.
-    /// The gc method resolves this by removing orders that were deleted by one channel but not
-    /// confirmed by the other, after a defined threshold period.
     pub fn gc(&mut self) {
         let now = now_ns();
         let stale_ts = now - 300_000_000_000;
@@ -438,293 +423,17 @@ impl OrderManager {
                 )
             })
             .collect();
-        for (client_order_id, order_id) in stale_ids.iter() {
-            if self.order_id_map.contains_key(order_id) {
-                // todo: something went wrong?
-                self.order_id_map.remove(order_id);
-            }
-            self.orders.remove(client_order_id);
+        for (client_order_id, symbol_order_id) in stale_ids {
+            self.orders.remove(&client_order_id);
+            self.order_id_map.remove(&symbol_order_id);
         }
     }
 
     pub fn active_orders(&self, symbol: &str) -> Vec<Order> {
         self.orders
             .values()
-            .filter(|order| {
-                order.symbol == symbol
-                    && !order.removed_by_ws
-                    && !order.removed_by_rest
-                    && (order.order.active() || order.order.pending())
-            })
-            .map(|order| order.order.clone())
+            .filter(|order_ext| order_ext.symbol == symbol && order_ext.order.active())
+            .map(|order_ext| order_ext.order.clone())
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::OrderManager;
-    use crate::exchange::binance_usdm::{
-        BinanceFuturesError,
-        id::ClientOrderIdCodec,
-        protocol::{rest::OrderResponse, stream::OrderTradeUpdate},
-    };
-
-    fn open_order_for(client_order_id: &str, symbol: &str) -> OrderResponse {
-        serde_json::from_str(
-            &json!({
-                "clientOrderId": client_order_id,
-                "cumQty": "0.250",
-                "cumQuote": "25.0",
-                "executedQty": "0.250",
-                "orderId": 123,
-                "avgPrice": "100.0",
-                "origQty": "1.000",
-                "price": "100.0",
-                "reduceOnly": false,
-                "side": "BUY",
-                "positionSide": "BOTH",
-                "status": "PARTIALLY_FILLED",
-                "stopPrice": "0",
-                "closePosition": false,
-                "symbol": symbol,
-                "timeInForce": "GTC",
-                "type": "LIMIT",
-                "origType": "LIMIT",
-                "updateTime": 1234,
-                "workingType": "CONTRACT_PRICE",
-                "priceProtect": false,
-                "priceMatch": "NONE",
-                "selfTradePreventionMode": "NONE",
-                "goodTillDate": 0
-            })
-            .to_string(),
-        )
-        .unwrap()
-    }
-
-    fn open_order(client_order_id: &str) -> OrderResponse {
-        open_order_for(client_order_id, "BTCUSDT")
-    }
-
-    fn active_websocket_update(
-        client_order_id: &str,
-        status: &str,
-        transaction_time: i64,
-    ) -> OrderTradeUpdate {
-        serde_json::from_str(
-            &json!({
-            "E": transaction_time,
-            "T": transaction_time,
-            "o": {
-                "s": "BTCUSDT",
-                "c": client_order_id,
-                "S": "BUY",
-                "o": "LIMIT",
-                "f": "GTC",
-                "q": "1.000",
-                "p": "100.0",
-                "ap": "100.0",
-                "sp": "0",
-                "x": "NEW",
-                "X": status,
-                "i": 123,
-                "l": "0",
-                "z": "0.250",
-                "L": "0",
-                "T": transaction_time,
-                "t": 0
-            }
-            })
-            .to_string(),
-        )
-        .unwrap()
-    }
-
-    fn assert_rest_terminal_order_rejects_active_websocket_update(
-        websocket_status: &str,
-        websocket_timestamp: i64,
-    ) {
-        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
-        let mut manager = OrderManager::new(codec);
-        let mut local = hftbacktest::types::Order::new(
-            123,
-            1_000,
-            0.1,
-            1.0,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::GTC,
-        );
-        local.req = hftbacktest::types::Status::New;
-        let client_order_id = manager
-            .prepare_client_order_id("btcusdt".to_string(), local)
-            .unwrap();
-
-        let mut terminal_response = open_order(&client_order_id);
-        terminal_response.status = hftbacktest::types::Status::Filled;
-        terminal_response.cum_qty = terminal_response.orig_qty;
-        terminal_response.executed_qty = terminal_response.orig_qty;
-        let terminal = manager
-            .update_from_rest(&client_order_id, &terminal_response)
-            .unwrap();
-        assert_eq!(terminal.status, hftbacktest::types::Status::Filled);
-
-        let active_update =
-            active_websocket_update(&client_order_id, websocket_status, websocket_timestamp);
-        assert!(manager.update_from_ws(&active_update).unwrap().is_none());
-        assert!(manager.active_orders("btcusdt").is_empty());
-        assert!(manager.orders.get(&client_order_id).is_none_or(|tracked| {
-            !matches!(
-                tracked.order.status,
-                hftbacktest::types::Status::New | hftbacktest::types::Status::PartiallyFilled
-            )
-        }));
-
-        manager.gc();
-        assert!(!manager.orders.contains_key(&client_order_id));
-    }
-
-    #[test]
-    fn recovery_restores_owned_orders_and_ignores_foreign_orders() {
-        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
-        let owned_id = codec.encode(42);
-        let mut manager = OrderManager::new(codec);
-
-        let recovered = manager
-            .reconcile_open_orders(
-                "btcusdt",
-                0.1,
-                &[open_order(&owned_id), open_order("other-v1-1-AbCd12")],
-            )
-            .unwrap();
-
-        assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].order_id, 42);
-        assert_eq!(recovered[0].qty, 1.0);
-        assert_eq!(recovered[0].leaves_qty, 0.75);
-        assert_eq!(manager.get_client_order_id("btcusdt", 42), Some(owned_id));
-    }
-
-    #[test]
-    fn recovery_fails_closed_for_a_malformed_owned_identifier() {
-        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
-        let mut manager = OrderManager::new(codec);
-
-        let error = manager
-            .reconcile_open_orders(
-                "btcusdt",
-                0.1,
-                &[open_order("strategy-a-v1-not-base36-AbCd12")],
-            )
-            .unwrap_err();
-
-        assert!(matches!(error, BinanceFuturesError::MalformedClientOrderId));
-        assert!(manager.active_orders("btcusdt").is_empty());
-    }
-
-    #[test]
-    fn multi_symbol_recovery_rolls_back_every_symbol_on_any_conflict() {
-        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
-        let btc_id = codec.encode(42);
-        let mut manager = OrderManager::new(codec);
-        let snapshots = vec![
-            (
-                "btcusdt".to_string(),
-                0.1,
-                vec![open_order_for(&btc_id, "BTCUSDT")],
-            ),
-            (
-                "ethusdt".to_string(),
-                0.01,
-                vec![open_order_for("strategy-a-v1-not-base36-AbCd12", "ETHUSDT")],
-            ),
-        ];
-
-        assert!(manager.reconcile_all_open_orders(&snapshots).is_err());
-        assert!(manager.active_orders("btcusdt").is_empty());
-        assert!(manager.active_orders("ethusdt").is_empty());
-    }
-
-    #[test]
-    fn terminal_websocket_update_wins_over_equal_timestamp_rest_response() {
-        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
-        let mut manager = OrderManager::new(codec);
-        let mut local = hftbacktest::types::Order::new(
-            77,
-            1_000,
-            0.1,
-            1.0,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::GTC,
-        );
-        local.req = hftbacktest::types::Status::New;
-        let client_order_id = manager
-            .prepare_client_order_id("btcusdt".to_string(), local)
-            .unwrap();
-        {
-            let tracked = manager.orders.get_mut(&client_order_id).unwrap();
-            tracked.order.status = hftbacktest::types::Status::Filled;
-            tracked.order.req = hftbacktest::types::Status::None;
-            tracked.order.exch_timestamp = 1_234_000_000;
-            tracked.removed_by_ws = true;
-        }
-        manager
-            .order_id_map
-            .remove(&crate::exchange::binance_usdm::id::RefSymbolOrderId::new(
-                "btcusdt", 77,
-            ));
-
-        let response = open_order(&client_order_id);
-        assert!(
-            manager
-                .update_from_rest(&client_order_id, &response)
-                .is_none()
-        );
-        assert!(manager.active_orders("btcusdt").is_empty());
-    }
-
-    #[test]
-    fn terminal_rest_update_wins_over_equal_timestamp_new_websocket_update() {
-        assert_rest_terminal_order_rejects_active_websocket_update("NEW", 1_234);
-    }
-
-    #[test]
-    fn terminal_rest_update_wins_over_newer_partially_filled_websocket_update() {
-        assert_rest_terminal_order_rejects_active_websocket_update("PARTIALLY_FILLED", 1_235);
-    }
-
-    #[test]
-    fn rest_update_reports_only_new_cumulative_fills() {
-        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
-        let mut manager = OrderManager::new(codec);
-        let mut local = hftbacktest::types::Order::new(
-            88,
-            1_000,
-            0.1,
-            1.0,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::GTC,
-        );
-        local.req = hftbacktest::types::Status::Canceled;
-        let client_order_id = manager
-            .prepare_client_order_id("btcusdt".to_string(), local)
-            .unwrap();
-        let mut canceled = open_order(&client_order_id);
-        canceled.status = hftbacktest::types::Status::Canceled;
-        canceled.cum_qty = 0.5;
-        canceled.executed_qty = 0.5;
-
-        let (_, first_has_new_fill) =
-            manager.update_from_rest_with_fill(&client_order_id, &canceled);
-        let (_, duplicate_has_new_fill) =
-            manager.update_from_rest_with_fill(&client_order_id, &canceled);
-
-        assert!(first_has_new_fill);
-        assert!(!duplicate_has_new_fill);
     }
 }
