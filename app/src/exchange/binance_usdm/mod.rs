@@ -446,11 +446,50 @@ impl ExecutionVenue for BinanceFutures {
                                         order,
                                     }));
                                 }
+                                return;
                             }
-                            Ok(None) | Err(_) => {
+                            Ok(None) => {
+                                let _ = tx.send(PublishEvent::AccountReconciliationStarted {
+                                    symbol: symbol.clone(),
+                                });
+                                let instrument = TradingInstrument {
+                                    symbol: symbol.clone(),
+                                    tick_size: order.tick_size,
+                                };
+                                match user_data_stream::reconcile_account_state(
+                                    client.clone(),
+                                    std::slice::from_ref(&instrument),
+                                    order_manager.clone(),
+                                    tx.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(()) => {
+                                        warn!(
+                                            %symbol,
+                                            %client_order_id,
+                                            "cancel returned unknown order; account state reconciled"
+                                        );
+                                        return;
+                                    }
+                                    Err(recovery_error) => {
+                                        error!(
+                                            %symbol,
+                                            %client_order_id,
+                                            ?recovery_error,
+                                            "cancel recovery failed; execution latched off"
+                                        );
+                                        let _ = tx.send(PublishEvent::ExecutionUncertain {
+                                            symbol: symbol.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            Err(query_error) => {
                                 error!(
                                     %symbol,
                                     %client_order_id,
+                                    ?query_error,
                                     "order cancellation outcome is unresolved; execution latched off"
                                 );
                                 let _ = tx.send(PublishEvent::ExecutionUncertain {
@@ -585,6 +624,15 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             response_body.len(),
             response_body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    }
+
+    async fn write_json_response(stream: &mut TcpStream, status: &str, body: &str) {
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
         );
         stream.write_all(response.as_bytes()).await.unwrap();
     }
@@ -802,24 +850,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_cancel_result_keeps_the_order_tracked_and_latches_execution() {
+    async fn unknown_cancel_result_reconciles_account_state_without_latching_execution() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for (code, message) in [
-                (-2011, "cancel status unknown"),
-                (-2013, "order does not exist"),
-            ] {
+            for step in 0..4 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                requests.push(read_http_request(&mut stream).await);
-                let body = serde_json::json!({ "code": code, "msg": message }).to_string();
-                let response = format!(
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                requests.push(request);
+                match step {
+                    0 => {
+                        let body = serde_json::json!({
+                            "code": -2011,
+                            "msg": "Unknown order sent."
+                        })
+                        .to_string();
+                        write_json_response(&mut stream, "400 Bad Request", &body).await;
+                    }
+                    1 => {
+                        let body = serde_json::json!({
+                            "code": -2013,
+                            "msg": "Order does not exist."
+                        })
+                        .to_string();
+                        write_json_response(&mut stream, "400 Bad Request", &body).await;
+                    }
+                    2 | 3 => write_json_response(&mut stream, "200 OK", "[]").await,
+                    _ => unreachable!(),
+                }
             }
             requests
         });
@@ -851,24 +910,38 @@ mod tests {
 
         connector.cancel("btcusdt".to_string(), order, tx);
 
-        let uncertain = time::timeout(Duration::from_secs(1), async {
-            loop {
-                if matches!(
-                    rx.recv().await,
-                    Some(PublishEvent::ExecutionUncertain { symbol }) if symbol == "btcusdt"
-                ) {
-                    break;
+        let mut reconciliation_started = false;
+        let mut ready = false;
+        let mut uncertain = false;
+        time::timeout(Duration::from_secs(2), async {
+            while !ready {
+                match rx.recv().await {
+                    Some(PublishEvent::AccountReconciliationStarted { symbol }) => {
+                        assert_eq!(symbol, "btcusdt");
+                        reconciliation_started = true;
+                    }
+                    Some(PublishEvent::AccountSnapshotReady { symbol }) => {
+                        assert_eq!(symbol, "btcusdt");
+                        ready = true;
+                    }
+                    Some(PublishEvent::ExecutionUncertain { .. }) => uncertain = true,
+                    Some(_) => {}
+                    None => break,
                 }
             }
         })
-        .await;
-        assert!(
-            uncertain.is_ok(),
-            "an unconfirmed cancel must latch execution"
-        );
-        assert_eq!(connector.open_orders("btcusdt").len(), 1);
+        .await
+        .unwrap();
+
+        assert!(reconciliation_started);
+        assert!(ready);
+        assert!(!uncertain, "confirmed reconciliation must not latch execution");
+        assert!(connector.open_orders("btcusdt").is_empty());
         let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 4);
         assert!(requests[0].starts_with("DELETE /fapi/v1/order "));
         assert!(requests[1].starts_with("GET /fapi/v1/order?"));
+        assert!(requests[2].starts_with("GET /fapi/v1/openOrders?"));
+        assert!(requests[3].starts_with("GET /fapi/v3/positionRisk?"));
     }
 }
