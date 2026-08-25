@@ -79,7 +79,9 @@ fn unwrap_order_payload(value: serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn parse_order_response_value(value: serde_json::Value) -> Result<OrderResponse, BinanceFuturesError> {
+fn parse_order_response_value(
+    value: serde_json::Value,
+) -> Result<OrderResponse, BinanceFuturesError> {
     let payload = unwrap_order_payload(value);
     if let Ok(error) = serde_json::from_value::<ErrorResponse>(payload.clone()) {
         return Err(BinanceFuturesError::OrderError {
@@ -568,7 +570,8 @@ mod tests {
 
     #[test]
     fn unknown_order_response_schema_is_ambiguous() {
-        let error = parse_order_response_value(serde_json::json!({"unexpected": true})).unwrap_err();
+        let error =
+            parse_order_response_value(serde_json::json!({"unexpected": true})).unwrap_err();
         assert!(matches!(
             error,
             super::BinanceFuturesError::OrderError { code, .. }
