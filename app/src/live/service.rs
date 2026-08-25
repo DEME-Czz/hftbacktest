@@ -489,11 +489,7 @@ mod tests {
 
     use super::{AccountReadiness, LiveService, StrategyRuntimes};
     use crate::{
-        live::{
-            config::SafetyConfig,
-            risk::RiskConfig,
-            runtime::LiveStrategyRuntime,
-        },
+        live::{config::SafetyConfig, risk::RiskConfig, runtime::LiveStrategyRuntime},
         ports::{ExecutionVenue, MarketDataSource, PublishEvent, RunMode, TradingInstrument},
     };
 
