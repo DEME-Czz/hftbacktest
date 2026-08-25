@@ -419,4 +419,33 @@ mod tests {
 
         assert!(!server.await.unwrap(), "signed request followed a redirect");
     }
+
+    #[tokio::test]
+    async fn request_timeout_bounds_a_server_that_never_responds() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            time::sleep(Duration::from_secs(1)).await;
+        });
+        let client = super::BinanceFuturesClient::new_with_timeout(
+            &format!("http://{address}"),
+            "key",
+            "secret",
+            Duration::from_millis(50),
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        let result = client.get_position_information().await;
+
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "request timeout must bound an accepted connection with no response"
+        );
+        server.abort();
+    }
 }
