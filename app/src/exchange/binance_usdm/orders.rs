@@ -677,4 +677,35 @@ mod tests {
     fn terminal_rest_update_wins_over_newer_partially_filled_websocket_update() {
         assert_rest_terminal_order_rejects_active_websocket_update("PARTIALLY_FILLED", 1_235);
     }
+
+    #[test]
+    fn rest_update_reports_only_new_cumulative_fills() {
+        let codec = ClientOrderIdCodec::new("strategy-a").unwrap();
+        let mut manager = OrderManager::new(codec);
+        let mut local = hftbacktest::types::Order::new(
+            88,
+            1_000,
+            0.1,
+            1.0,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::GTC,
+        );
+        local.req = hftbacktest::types::Status::Canceled;
+        let client_order_id = manager
+            .prepare_client_order_id("btcusdt".to_string(), local)
+            .unwrap();
+        let mut canceled = open_order(&client_order_id);
+        canceled.status = hftbacktest::types::Status::Canceled;
+        canceled.cum_qty = 0.5;
+        canceled.executed_qty = 0.5;
+
+        let (_, first_has_new_fill) =
+            manager.update_from_rest_with_fill(&client_order_id, &canceled);
+        let (_, duplicate_has_new_fill) =
+            manager.update_from_rest_with_fill(&client_order_id, &canceled);
+
+        assert!(first_has_new_fill);
+        assert!(!duplicate_has_new_fill);
+    }
 }
