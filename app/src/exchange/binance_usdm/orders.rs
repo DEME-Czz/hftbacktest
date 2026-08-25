@@ -192,11 +192,30 @@ impl OrderManager {
         client_order_id: &ClientOrderId,
         resp: &OrderResponse,
     ) -> Option<Order> {
-        let order_ext = self.orders.get_mut(client_order_id)?;
+        self.update_from_rest_with_fill(client_order_id, resp).0
+    }
+
+    pub fn update_from_rest_with_fill(
+        &mut self,
+        client_order_id: &ClientOrderId,
+        resp: &OrderResponse,
+    ) -> (Option<Order>, bool) {
+        let Some(order_ext) = self.orders.get_mut(client_order_id) else {
+            return (None, false);
+        };
         // .ok_or(BinanceFuturesError::OrderNotFound)?;
 
         let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-        if !already_removed && resp.update_time * 1_000_000 >= order_ext.order.exch_timestamp {
+        let response_is_current =
+            !already_removed && resp.update_time * 1_000_000 >= order_ext.order.exch_timestamp;
+        let known_filled_qty = (order_ext.order.qty - order_ext.order.leaves_qty).max(0.0);
+        let fill_tolerance = resp.executed_qty.abs().max(known_filled_qty.abs()).max(1.0)
+            * f64::EPSILON
+            * 8.0;
+        let has_new_fill = response_is_current
+            && resp.executed_qty.is_finite()
+            && resp.executed_qty > known_filled_qty + fill_tolerance;
+        if response_is_current {
             order_ext.order.qty = resp.orig_qty;
             order_ext.order.leaves_qty = resp.orig_qty - resp.cum_qty;
             order_ext.order.side = resp.side;
@@ -232,7 +251,7 @@ impl OrderManager {
             }
         }
 
-        result
+        (result, has_new_fill)
     }
 
     pub fn prepare_client_order_id(&mut self, symbol: String, order: Order) -> Option<String> {
