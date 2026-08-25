@@ -173,6 +173,7 @@ pub struct BinanceFutures {
     symbols: SharedSymbolSet,
     order_manager: SharedOrderManager,
     submissions_in_flight: SharedInFlightSubmissions,
+    cancellations_in_flight: SharedInFlightSubmissions,
     client: BinanceFuturesClient,
     symbol_tx: Sender<String>,
 }
@@ -190,6 +191,7 @@ impl BinanceFutures {
             symbols: Default::default(),
             order_manager,
             submissions_in_flight: Default::default(),
+            cancellations_in_flight: Default::default(),
             client,
             symbol_tx,
         })
@@ -404,74 +406,81 @@ impl ExecutionVenue for BinanceFutures {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         let submissions_in_flight = self.submissions_in_flight.clone();
-        let client_order_id =
-            lock_recover(&order_manager).get_client_order_id(&symbol, order.order_id);
+        let Some(client_order_id) =
+            lock_recover(&order_manager).get_client_order_id(&symbol, order.order_id)
+        else {
+            warn!(order_id = order.order_id, "client order id not found");
+            return;
+        };
+        let cancellations_in_flight = self.cancellations_in_flight.clone();
+        if !lock_recover(&cancellations_in_flight).insert(client_order_id.clone()) {
+            return;
+        }
         tokio::spawn(async move {
-            if let Some(client_order_id) = client_order_id {
-                while lock_recover(&submissions_in_flight).contains(&client_order_id) {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
+            let _cancellation_guard = InFlightSubmissionGuard::new(
+                client_order_id.clone(),
+                cancellations_in_flight,
+            );
+            while lock_recover(&submissions_in_flight).contains(&client_order_id) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
 
-                let still_tracked = lock_recover(&order_manager)
-                    .get_client_order_id(&symbol, order.order_id)
-                    .is_some_and(|current| current == client_order_id);
-                if !still_tracked {
-                    return;
-                }
+            let still_tracked = lock_recover(&order_manager)
+                .get_client_order_id(&symbol, order.order_id)
+                .is_some_and(|current| current == client_order_id);
+            if !still_tracked {
+                return;
+            }
 
-                match client.cancel_order(&client_order_id, &symbol).await {
-                    Ok(resp) => {
-                        if let Some(order) =
-                            lock_recover(&order_manager).update_from_rest(&client_order_id, &resp)
-                        {
-                            let _ = tx
-                                .send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
-                        }
+            match client.cancel_order(&client_order_id, &symbol).await {
+                Ok(resp) => {
+                    if let Some(order) =
+                        lock_recover(&order_manager).update_from_rest(&client_order_id, &resp)
+                    {
+                        let _ = tx
+                            .send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
                     }
-                    Err(error) => {
-                        if matches!(
-                            error,
-                            BinanceFuturesError::OrderError { code: -2011, .. }
-                        ) {
-                            match client.query_order(&client_order_id, &symbol).await {
-                                Ok(Some(response)) => {
-                                    if let Some(order) = lock_recover(&order_manager)
-                                        .update_from_rest(&client_order_id, &response)
-                                    {
-                                        let _ = tx.send(PublishEvent::LiveEvent(
-                                            LiveEvent::Order {
-                                                symbol: symbol.clone(),
-                                                order,
-                                            },
-                                        ));
-                                    }
-                                }
-                                Ok(None) | Err(_) => {
-                                    error!(
-                                        %symbol,
-                                        %client_order_id,
-                                        "order cancellation outcome is unresolved; execution latched off"
-                                    );
-                                    let _ = tx.send(PublishEvent::ExecutionUncertain {
-                                        symbol: symbol.clone(),
-                                    });
+                }
+                Err(error) => {
+                    if matches!(
+                        error,
+                        BinanceFuturesError::OrderError { code: -2011, .. }
+                    ) {
+                        match client.query_order(&client_order_id, &symbol).await {
+                            Ok(Some(response)) => {
+                                if let Some(order) = lock_recover(&order_manager)
+                                    .update_from_rest(&client_order_id, &response)
+                                {
+                                    let _ =
+                                        tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                                            symbol: symbol.clone(),
+                                            order,
+                                        }));
                                 }
                             }
-                        } else if let Some(order) = lock_recover(&order_manager)
-                            .update_cancel_fail(&client_order_id, &error)
-                        {
-                            let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                symbol: symbol.clone(),
-                                order,
-                            }));
+                            Ok(None) | Err(_) => {
+                                error!(
+                                    %symbol,
+                                    %client_order_id,
+                                    "order cancellation outcome is unresolved; execution latched off"
+                                );
+                                let _ = tx.send(PublishEvent::ExecutionUncertain {
+                                    symbol: symbol.clone(),
+                                });
+                            }
                         }
-                        let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Error(
-                            LiveError::with(ErrorKind::OrderError, error.into()),
-                        )));
+                    } else if let Some(order) = lock_recover(&order_manager)
+                        .update_cancel_fail(&client_order_id, &error)
+                    {
+                        let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                            symbol: symbol.clone(),
+                            order,
+                        }));
                     }
+                    let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Error(
+                        LiveError::with(ErrorKind::OrderError, error.into()),
+                    )));
                 }
-            } else {
-                warn!(order_id = order.order_id, "client order id not found");
             }
         });
     }
