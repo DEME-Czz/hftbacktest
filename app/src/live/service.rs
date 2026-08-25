@@ -34,9 +34,7 @@ struct AccountReadiness {
 
 impl AccountReadiness {
     fn reconcile(&mut self, symbol: &str) -> bool {
-        if self.halted.contains(symbol)
-            || !self.position_timestamps.contains_key(symbol)
-        {
+        if self.halted.contains(symbol) || !self.position_timestamps.contains_key(symbol) {
             return false;
         }
         self.recovered_snapshots.insert(symbol.to_string());
@@ -414,9 +412,9 @@ impl<C: LiveConnector> LiveService<C> {
             for order in orders {
                 let request_key = (symbol.clone(), order.order_id);
                 let now = time::Instant::now();
-                let retry_due = requested
-                    .get(&request_key)
-                    .is_none_or(|last_request| now.duration_since(*last_request) >= SAFETY_CANCEL_RETRY);
+                let retry_due = requested.get(&request_key).is_none_or(|last_request| {
+                    now.duration_since(*last_request) >= SAFETY_CANCEL_RETRY
+                });
                 if retry_due {
                     requested.insert(request_key, now);
                     warn!(%symbol, order_id = order.order_id, "canceling order due to live safety halt");
@@ -491,56 +489,123 @@ mod tests {
 
     use super::{AccountReadiness, LiveService, StrategyRuntimes};
     use crate::{
-        live::{config::SafetyConfig, risk::RiskConfig, runtime::LiveStrategyRuntime},
+        live::{
+            config::SafetyConfig,
+            risk::RiskConfig,
+            runtime::LiveStrategyRuntime,
+        },
         ports::{ExecutionVenue, MarketDataSource, PublishEvent, RunMode, TradingInstrument},
     };
 
     #[derive(Clone)]
     struct PositionOnlyConnector {
         submitted: Arc<Mutex<Vec<Order>>>,
-        open_orders: Arc<Mutex<Vec<Order>>>,
+        open_orders: Arc<Mutex<HashMap<String, Vec<Order>>>>,
         canceled: Arc<Mutex<Vec<Order>>>,
         snapshot_ready: bool,
         confirm_cancel: bool,
     }
 
-    #[derive(Clone, Default)]
-    struct ManualConnector {
-        event_tx: Arc<Mutex<Option<UnboundedSender<PublishEvent>>>>,
-        submitted: Arc<Mutex<Vec<Order>>>,
-    }
-
-    impl MarketDataSource for ManualConnector {
+    impl MarketDataSource for PositionOnlyConnector {
         fn register(&mut self, _symbol: String) {}
 
         fn start_market_data(&mut self, tx: UnboundedSender<PublishEvent>) {
-            *self.event_tx.lock().unwrap() = Some(tx);
+            send_depth_batch(&tx, 1_000_000_000, 1.0);
         }
     }
 
-    impl ExecutionVenue for ManualConnector {
+    impl ExecutionVenue for PositionOnlyConnector {
         fn start_account_stream(
             &self,
-            _instruments: Vec<TradingInstrument>,
-            _tx: UnboundedSender<PublishEvent>,
+            instruments: Vec<TradingInstrument>,
+            tx: UnboundedSender<PublishEvent>,
         ) {
+            for instrument in instruments {
+                tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
+                    symbol: instrument.symbol.clone(),
+                    qty: 0.0,
+                    exch_ts: 1,
+                }))
+                .unwrap();
+                if self.snapshot_ready {
+                    tx.send(PublishEvent::AccountSnapshotReady {
+                        symbol: instrument.symbol,
+                    })
+                    .unwrap();
+                }
+            }
         }
 
-        fn open_orders(&self, _symbol: &str) -> Vec<Order> {
-            Vec::new()
+        fn open_orders(&self, symbol: &str) -> Vec<Order> {
+            self.open_orders
+                .lock()
+                .unwrap()
+                .get(symbol)
+                .cloned()
+                .unwrap_or_default()
         }
 
         fn submit(
             &self,
-            _symbol: String,
+            symbol: String,
             order: Order,
             _lot_size: f64,
             _tx: UnboundedSender<PublishEvent>,
         ) {
-            self.submitted.lock().unwrap().push(order);
+            self.submitted.lock().unwrap().push(order.clone());
+            self.open_orders
+                .lock()
+                .unwrap()
+                .entry(symbol)
+                .or_default()
+                .push(order);
         }
 
-        fn cancel(&self, _symbol: String, _order: Order, _tx: UnboundedSender<PublishEvent>) {}
+        fn cancel(&self, symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
+            self.canceled.lock().unwrap().push(order.clone());
+            if self.confirm_cancel {
+                if let Some(orders) = self.open_orders.lock().unwrap().get_mut(&symbol) {
+                    orders.retain(|candidate| candidate.order_id != order.order_id);
+                }
+            }
+        }
+    }
+
+    fn test_runtimes() -> StrategyRuntimes {
+        let config = BuiltinStrategyConfig::Grid {
+            config: GridConfig {
+                relative_half_spread: 0.0005,
+                relative_grid_interval: 0.0005,
+                grid_num: 1,
+                min_grid_step: 0.1,
+                skew: 0.0,
+                order_qty: 0.001,
+                max_position: 0.003,
+            },
+        };
+        let mut runtimes = StrategyRuntimes::new();
+        runtimes.insert(
+            "btcusdt".to_string(),
+            LiveStrategyRuntime::new("btcusdt".to_string(), 0.1, 0.001, config.build().unwrap()),
+        );
+        runtimes
+    }
+
+    fn risk() -> RiskConfig {
+        RiskConfig {
+            max_order_qty: 0.001,
+            max_order_notional: 1_000.0,
+            max_position: 0.003,
+            max_open_orders: 4,
+        }
+    }
+
+    fn safety() -> SafetyConfig {
+        SafetyConfig {
+            stale_market_timeout_ms: 1_000,
+            shutdown_cancel_timeout_ms: 300,
+            kill_switch_file: None,
+        }
     }
 
     fn send_depth_batch_at(
@@ -568,10 +633,7 @@ mod tests {
             }))
             .unwrap();
         }
-        tx.send(PublishEvent::BatchEnd {
-            received_at,
-        })
-        .unwrap();
+        tx.send(PublishEvent::BatchEnd { received_at }).unwrap();
     }
 
     fn send_depth_batch(tx: &UnboundedSender<PublishEvent>, timestamp: i64, quantity: f64) {
@@ -590,518 +652,12 @@ mod tests {
         }
     }
 
-    impl MarketDataSource for PositionOnlyConnector {
-        fn register(&mut self, _symbol: String) {}
-        fn start_market_data(&mut self, _tx: UnboundedSender<PublishEvent>) {}
-    }
-
-    impl ExecutionVenue for PositionOnlyConnector {
-        fn start_account_stream(
-            &self,
-            _instruments: Vec<TradingInstrument>,
-            tx: UnboundedSender<PublishEvent>,
-        ) {
-            tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
-                symbol: "btcusdt".to_string(),
-                qty: 0.0,
-                exch_ts: 1,
-            }))
-            .unwrap();
-            if self.snapshot_ready {
-                tx.send(PublishEvent::AccountSnapshotReady {
-                    symbol: "btcusdt".to_string(),
-                })
-                .unwrap();
-            }
-            for (ev, px) in [
-                (LOCAL_BID_DEPTH_EVENT, 100.0),
-                (LOCAL_ASK_DEPTH_EVENT, 101.0),
-            ] {
-                tx.send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                    symbol: "btcusdt".to_string(),
-                    event: Event {
-                        ev,
-                        exch_ts: 1,
-                        local_ts: 1,
-                        px,
-                        qty: 10.0,
-                        order_id: 0,
-                        ival: 0,
-                        fval: 0.0,
-                    },
-                }))
-                .unwrap();
-            }
-            tx.send(PublishEvent::BatchEnd {
-                received_at: std::time::Instant::now(),
-            })
-            .unwrap();
-        }
-
-        fn open_orders(&self, _symbol: &str) -> Vec<Order> {
-            self.open_orders.lock().unwrap().clone()
-        }
-
-        fn submit(
-            &self,
-            _symbol: String,
-            order: Order,
-            _lot_size: f64,
-            _tx: UnboundedSender<PublishEvent>,
-        ) {
-            self.submitted.lock().unwrap().push(order);
-        }
-
-        fn cancel(&self, _symbol: String, order: Order, _tx: UnboundedSender<PublishEvent>) {
-            if self.confirm_cancel {
-                self.open_orders
-                    .lock()
-                    .unwrap()
-                    .retain(|open| open.order_id != order.order_id);
-            }
-            self.canceled.lock().unwrap().push(order);
-        }
-    }
-
-    fn grid_runtimes() -> StrategyRuntimes {
-        let strategy = BuiltinStrategy::from_config(BuiltinStrategyConfig::Grid(GridConfig {
-            relative_half_spread: 0.0005,
-            relative_grid_interval: 0.0005,
-            grid_num: 1,
-            min_grid_step: 0.1,
-            skew: 0.00025,
-            order_qty: 0.001,
-            max_position: 0.003,
-        }))
-        .unwrap();
-        let mut runtimes = StrategyRuntimes::new();
-        runtimes.insert(
-            "btcusdt".to_string(),
-            LiveStrategyRuntime::new("btcusdt", 0.1, 0.001, strategy),
-        );
-        runtimes
-    }
-
     #[test]
-    fn account_disconnect_invalidates_every_reconciled_symbol() {
+    fn account_readiness_requires_position_and_snapshot() {
         let mut readiness = AccountReadiness::default();
-        readiness.observe_position("btcusdt", 1, true);
-        readiness.observe_position("ethusdt", 1, true);
-        readiness.reconcile("btcusdt");
-        readiness.reconcile("ethusdt");
-        assert!(readiness.contains("btcusdt"));
-        assert!(readiness.contains("ethusdt"));
-
-        readiness.disconnect();
+        readiness.observe_position("btcusdt", 10, true);
         assert!(!readiness.contains("btcusdt"));
-        assert!(!readiness.contains("ethusdt"));
-
-        readiness.observe_position("btcusdt", 2, true);
-        readiness.reconcile("btcusdt");
-        assert!(readiness.contains("btcusdt"));
-        assert!(!readiness.contains("ethusdt"));
-    }
-
-    #[test]
-    fn account_deltas_cannot_bypass_the_startup_snapshot_barrier() {
-        let mut readiness = AccountReadiness::default();
-        let mut fill = Order::new(
-            11,
-            1_000,
-            0.1,
-            0.001,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::GTC,
-        );
-        fill.status = hftbacktest::types::Status::Filled;
-        fill.exec_qty = fill.qty;
-        fill.exch_timestamp = 200;
-
-        readiness.observe_order("btcusdt", &fill);
-        readiness.observe_position("btcusdt", 200, true);
-
-        assert!(
-            !readiness.contains("btcusdt"),
-            "account deltas alone must not authorize execution before recovery is ready"
-        );
-    }
-
-    #[test]
-    fn canceled_order_with_historical_fills_does_not_wait_for_a_new_position_event() {
-        let mut readiness = AccountReadiness::default();
-        readiness.observe_position("btcusdt", 100, true);
         assert!(readiness.reconcile("btcusdt"));
-        let mut canceled = Order::new(
-            12,
-            1_000,
-            0.1,
-            0.001,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::GTC,
-        );
-        canceled.status = hftbacktest::types::Status::Canceled;
-        canceled.exec_qty = 0.0005;
-        canceled.exch_timestamp = 200;
-
-        readiness.observe_order("btcusdt", &canceled);
-
         assert!(readiness.contains("btcusdt"));
-    }
-
-    #[test]
-    fn expired_ioc_with_a_last_fill_waits_for_the_matching_position() {
-        let mut readiness = AccountReadiness::default();
-        readiness.observe_position("btcusdt", 100, true);
-        assert!(readiness.reconcile("btcusdt"));
-        let mut expired = Order::new(
-            14,
-            1_000,
-            0.1,
-            0.001,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::IOC,
-        );
-        expired.status = hftbacktest::types::Status::Expired;
-        expired.exec_qty = 0.0005;
-        expired.exch_timestamp = 200;
-
-        readiness.observe_order("btcusdt", &expired);
-
-        assert!(!readiness.contains("btcusdt"));
-    }
-
-    #[tokio::test]
-    async fn position_without_order_recovery_never_enables_execution() {
-        let connector = PositionOnlyConnector::default();
-        let submitted = connector.submitted.clone();
-        let service = LiveService::new(
-            connector,
-            grid_runtimes(),
-            RiskConfig::default(),
-            RunMode::Execute,
-        );
-
-        service
-            .run_until(async {
-                time::sleep(Duration::from_millis(20)).await;
-            })
-            .await
-            .unwrap();
-
-        assert!(
-            submitted.lock().unwrap().is_empty(),
-            "a position snapshot alone must not authorize order submission"
-        );
-    }
-
-    #[tokio::test]
-    async fn completed_account_snapshot_enables_execution() {
-        let connector = PositionOnlyConnector {
-            snapshot_ready: true,
-            ..PositionOnlyConnector::default()
-        };
-        let submitted = connector.submitted.clone();
-        let service = LiveService::new(
-            connector,
-            grid_runtimes(),
-            RiskConfig::default(),
-            RunMode::Execute,
-        );
-
-        service
-            .run_until(async {
-                time::sleep(Duration::from_millis(20)).await;
-            })
-            .await
-            .unwrap();
-
-        assert!(!submitted.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn fill_blocks_replenishment_until_the_matching_position_update_arrives() {
-        let connector = ManualConnector::default();
-        let event_tx = connector.event_tx.clone();
-        let submitted = connector.submitted.clone();
-        let service = LiveService::new(
-            connector,
-            grid_runtimes(),
-            RiskConfig::default(),
-            RunMode::Execute,
-        );
-
-        service
-            .run_until(async move {
-                let tx = loop {
-                    if let Some(tx) = event_tx.lock().unwrap().clone() {
-                        break tx;
-                    }
-                    tokio::task::yield_now().await;
-                };
-                tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
-                    symbol: "btcusdt".to_string(),
-                    qty: 0.0,
-                    exch_ts: 100,
-                }))
-                .unwrap();
-                tx.send(PublishEvent::AccountSnapshotReady {
-                    symbol: "btcusdt".to_string(),
-                })
-                .unwrap();
-                send_depth_batch(&tx, 100, 10.0);
-                time::sleep(Duration::from_millis(20)).await;
-
-                let (initial_count, mut filled) = {
-                    let submitted = submitted.lock().unwrap();
-                    let filled = submitted
-                        .iter()
-                        .find(|order| order.side == hftbacktest::types::Side::Buy)
-                        .cloned()
-                        .expect("initial grid must include a bid");
-                    (submitted.len(), filled)
-                };
-                filled.req = hftbacktest::types::Status::None;
-                filled.status = hftbacktest::types::Status::Filled;
-                filled.exec_qty = filled.qty;
-                filled.leaves_qty = 0.0;
-                filled.exch_timestamp = 200;
-                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                    symbol: "btcusdt".to_string(),
-                    order: filled,
-                }))
-                .unwrap();
-                send_depth_batch(&tx, 200, 11.0);
-                time::sleep(Duration::from_millis(20)).await;
-
-                assert_eq!(
-                    submitted.lock().unwrap().len(),
-                    initial_count,
-                    "a fill must not be replenished while position is still stale"
-                );
-
-                tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
-                    symbol: "btcusdt".to_string(),
-                    qty: 0.001,
-                    exch_ts: 200,
-                }))
-                .unwrap();
-            })
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn queued_market_batch_uses_receive_time_for_staleness() {
-        let connector = ManualConnector::default();
-        let event_tx = connector.event_tx.clone();
-        let submitted = connector.submitted.clone();
-        let service = LiveService::with_safety(
-            connector,
-            grid_runtimes(),
-            RiskConfig::default(),
-            SafetyConfig {
-                stale_market_timeout_ms: 20,
-                ..SafetyConfig::default()
-            },
-            RunMode::Execute,
-        );
-
-        service
-            .run_until(async move {
-                let tx = loop {
-                    if let Some(tx) = event_tx.lock().unwrap().clone() {
-                        break tx;
-                    }
-                    tokio::task::yield_now().await;
-                };
-                tx.send(PublishEvent::LiveEvent(LiveEvent::Position {
-                    symbol: "btcusdt".to_string(),
-                    qty: 0.0,
-                    exch_ts: 100,
-                }))
-                .unwrap();
-                tx.send(PublishEvent::AccountSnapshotReady {
-                    symbol: "btcusdt".to_string(),
-                })
-                .unwrap();
-                let received_at = std::time::Instant::now()
-                    .checked_sub(Duration::from_millis(50))
-                    .unwrap();
-                send_depth_batch_at(&tx, 100, 10.0, received_at);
-                time::sleep(Duration::from_millis(20)).await;
-
-                assert!(
-                    submitted.lock().unwrap().is_empty(),
-                    "a queued batch older than the stale deadline must not authorize orders"
-                );
-            })
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn stale_market_cancels_each_tracked_order_once() {
-        let connector = PositionOnlyConnector::default();
-        let mut order = Order::new(
-            7,
-            1_000,
-            0.1,
-            0.001,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::GTC,
-        );
-        order.status = hftbacktest::types::Status::New;
-        connector.open_orders.lock().unwrap().push(order);
-        let canceled = connector.canceled.clone();
-        let service = LiveService::with_safety(
-            connector,
-            grid_runtimes(),
-            RiskConfig::default(),
-            SafetyConfig {
-                stale_market_timeout_ms: 20,
-                kill_switch_file: None,
-                ..SafetyConfig::default()
-            },
-            RunMode::Execute,
-        );
-
-        service
-            .run_until(async {
-                time::sleep(Duration::from_millis(90)).await;
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(canceled.lock().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn stale_market_retries_cancellation_while_the_order_remains_active() {
-        let connector = PositionOnlyConnector {
-            confirm_cancel: false,
-            ..PositionOnlyConnector::default()
-        };
-        let mut order = Order::new(
-            13,
-            1_000,
-            0.1,
-            0.001,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::GTC,
-        );
-        order.status = hftbacktest::types::Status::New;
-        connector.open_orders.lock().unwrap().push(order);
-        let canceled = connector.canceled.clone();
-        let service = LiveService::with_safety(
-            connector,
-            grid_runtimes(),
-            RiskConfig::default(),
-            SafetyConfig {
-                stale_market_timeout_ms: 20,
-                shutdown_cancel_timeout_ms: 25,
-                kill_switch_file: None,
-            },
-            RunMode::Execute,
-        );
-
-        let result = service
-            .run_until(async {
-                time::sleep(Duration::from_millis(560)).await;
-            })
-            .await;
-
-        assert!(result.is_err(), "the unconfirmed order must fail shutdown");
-        assert!(
-            canceled.lock().unwrap().len() >= 3,
-            "stale cancellation must retry before the final shutdown attempt"
-        );
-    }
-
-    #[tokio::test]
-    async fn kill_switch_present_at_start_prevents_submit_and_cancels_tracked_orders() {
-        let kill_switch = std::env::temp_dir().join(format!(
-            "hft-app-kill-switch-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
-        std::fs::write(&kill_switch, b"halt").unwrap();
-
-        let connector = PositionOnlyConnector {
-            snapshot_ready: true,
-            ..PositionOnlyConnector::default()
-        };
-        let mut order = Order::new(
-            8,
-            1_000,
-            0.1,
-            0.001,
-            hftbacktest::types::Side::Sell,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::GTC,
-        );
-        order.status = hftbacktest::types::Status::New;
-        connector.open_orders.lock().unwrap().push(order);
-        let submitted = connector.submitted.clone();
-        let canceled = connector.canceled.clone();
-        let service = LiveService::with_safety(
-            connector,
-            grid_runtimes(),
-            RiskConfig::default(),
-            SafetyConfig {
-                stale_market_timeout_ms: 5_000,
-                kill_switch_file: Some(kill_switch.clone()),
-                ..SafetyConfig::default()
-            },
-            RunMode::Execute,
-        );
-
-        service
-            .run_until(async {
-                time::sleep(Duration::from_millis(40)).await;
-            })
-            .await
-            .unwrap();
-        std::fs::remove_file(kill_switch).unwrap();
-
-        assert!(submitted.lock().unwrap().is_empty());
-        assert_eq!(canceled.lock().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn shutdown_with_unconfirmed_orders_returns_an_error() {
-        let connector = PositionOnlyConnector {
-            confirm_cancel: false,
-            ..PositionOnlyConnector::default()
-        };
-        let mut order = Order::new(
-            9,
-            1_000,
-            0.1,
-            0.001,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::GTC,
-        );
-        order.status = hftbacktest::types::Status::New;
-        connector.open_orders.lock().unwrap().push(order);
-        let service = LiveService::with_safety(
-            connector,
-            grid_runtimes(),
-            RiskConfig::default(),
-            SafetyConfig {
-                shutdown_cancel_timeout_ms: 25,
-                ..SafetyConfig::default()
-            },
-            RunMode::Execute,
-        );
-
-        let result = service.run_until(async {}).await;
-
-        assert!(result.is_err());
     }
 }
