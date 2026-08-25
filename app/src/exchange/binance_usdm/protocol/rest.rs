@@ -6,6 +6,14 @@ use super::{
     from_str_to_type, to_lowercase,
 };
 
+fn default_order_type() -> OrdType {
+    OrdType::Unsupported
+}
+
+fn default_time_in_force() -> TimeInForce {
+    TimeInForce::Unsupported
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 pub enum OrderResponseResult {
@@ -40,27 +48,35 @@ pub struct OrderResponse {
     pub orig_qty: f64,
     #[serde(deserialize_with = "from_str_to_f64")]
     pub price: f64,
-    #[serde(rename = "reduceOnly")]
+    #[serde(rename = "reduceOnly", default)]
     pub reduce_only: bool,
     #[serde(deserialize_with = "from_str_to_side")]
     pub side: Side,
-    #[serde(rename = "positionSide")]
+    #[serde(rename = "positionSide", default)]
     pub position_side: String,
     #[serde(deserialize_with = "from_str_to_status")]
     pub status: Status,
-    #[serde(rename = "stopPrice", deserialize_with = "from_str_to_f64")]
+    #[serde(rename = "stopPrice", default, deserialize_with = "from_str_to_f64")]
     pub stop_price: f64,
-    #[serde(rename = "closePosition")]
+    #[serde(rename = "closePosition", default)]
     pub close_position: bool,
     #[serde(deserialize_with = "to_lowercase")]
     pub symbol: String,
     #[serde(default)]
     pub pair: Option<String>,
-    #[serde(rename = "timeInForce", deserialize_with = "from_str_to_tif")]
+    #[serde(
+        rename = "timeInForce",
+        default = "default_time_in_force",
+        deserialize_with = "from_str_to_tif"
+    )]
     pub time_in_force: TimeInForce,
     #[serde(rename = "type", deserialize_with = "from_str_to_type")]
     pub ty: OrdType,
-    #[serde(rename = "origType", deserialize_with = "from_str_to_type")]
+    #[serde(
+        rename = "origType",
+        default = "default_order_type",
+        deserialize_with = "from_str_to_type"
+    )]
     pub orig_type: OrdType,
     #[serde(
         rename = "activatePrice",
@@ -76,15 +92,15 @@ pub struct OrderResponse {
     pub price_rate: Option<f64>,
     #[serde(rename = "updateTime")]
     pub update_time: i64,
-    #[serde(rename = "workingType")]
+    #[serde(rename = "workingType", default)]
     pub working_type: String,
-    #[serde(rename = "priceProtect")]
+    #[serde(rename = "priceProtect", default)]
     pub price_protect: bool,
-    #[serde(rename = "priceMatch")]
+    #[serde(rename = "priceMatch", default)]
     pub price_match: String,
-    #[serde(rename = "selfTradePreventionMode")]
+    #[serde(rename = "selfTradePreventionMode", default)]
     pub self_trade_prevention_mode: String,
-    #[serde(rename = "goodTillDate")]
+    #[serde(rename = "goodTillDate", default)]
     pub good_till_date: i64,
     /// Optional pass-through identifier added to modify-order responses in 2026-07.
     #[serde(rename = "modifyId", default)]
@@ -128,7 +144,10 @@ pub struct PositionInformationV3 {
     pub initial_margin: f64,
     #[serde(rename = "maintMargin", deserialize_with = "from_str_to_f64")]
     pub maint_margin: f64,
-    #[serde(rename = "positionInitialMargin", deserialize_with = "from_str_to_f64")]
+    #[serde(
+        rename = "positionInitialMargin",
+        deserialize_with = "from_str_to_f64"
+    )]
     pub position_initial_margin: f64,
     #[serde(
         rename = "openOrderInitialMargin",
