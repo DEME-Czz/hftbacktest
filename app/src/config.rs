@@ -118,34 +118,63 @@ fn matched_execution_environment(
         && is_loopback(&api)
         && is_loopback(&public_stream)
         && is_loopback(&private_stream)
+        && api.scheme() == "http"
+        && public_stream.scheme() == "ws"
+        && private_stream.scheme() == "ws"
     {
         return true;
     }
-    let Some(api_host) = api.host_str() else {
-        return false;
-    };
-    let Some(public_host) = public_stream.host_str() else {
-        return false;
-    };
-    let Some(private_host) = private_stream.host_str() else {
-        return false;
-    };
-    matches!(
-        (api_host, public_host, private_host),
-        (
-            "fapi.binance.com",
-            "fstream.binance.com",
-            "fstream.binance.com"
-        ) | (
-            "demo-fapi.binance.com",
-            "demo-fstream.binance.com",
-            "demo-fstream.binance.com"
-        ) | (
-            "testnet.binancefuture.com",
-            "stream.binancefuture.com",
-            "stream.binancefuture.com"
-        )
+
+    matches_execution_profile(
+        &api,
+        &public_stream,
+        &private_stream,
+        "fapi.binance.com",
+        "fstream.binance.com",
+        "/public/stream",
+        "/private/ws/configured-listen-key",
+    ) || matches_execution_profile(
+        &api,
+        &public_stream,
+        &private_stream,
+        "demo-fapi.binance.com",
+        "demo-fstream.binance.com",
+        "/ws",
+        "/ws/configured-listen-key",
+    ) || matches_execution_profile(
+        &api,
+        &public_stream,
+        &private_stream,
+        "testnet.binancefuture.com",
+        "stream.binancefuture.com",
+        "/ws",
+        "/ws/configured-listen-key",
     )
+}
+
+fn matches_execution_profile(
+    api: &reqwest::Url,
+    public_stream: &reqwest::Url,
+    private_stream: &reqwest::Url,
+    api_host: &str,
+    stream_host: &str,
+    public_stream_path: &str,
+    private_stream_path: &str,
+) -> bool {
+    matches_endpoint(api, "https", api_host, "/")
+        && matches_endpoint(public_stream, "wss", stream_host, public_stream_path)
+        && matches_endpoint(private_stream, "wss", stream_host, private_stream_path)
+}
+
+fn matches_endpoint(url: &reqwest::Url, scheme: &str, host: &str, path: &str) -> bool {
+    url.scheme() == scheme
+        && url.host_str() == Some(host)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port().is_none()
+        && url.path() == path
+        && url.query().is_none()
+        && url.fragment().is_none()
 }
 
 fn valid_transport(raw: &str, secure_scheme: &str, loopback_scheme: &str) -> bool {
