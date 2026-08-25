@@ -46,11 +46,9 @@ fn sign_hmac_sha256(secret: &str, message: &str) -> Result<String, BinanceFuture
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
         .map_err(|_| BinanceFuturesError::InvalidRequest)?;
     mac.update(message.as_bytes());
-
     let bytes = mac.finalize().into_bytes();
     let mut signature = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        // Writing to a String is infallible.
         let _ = write!(signature, "{byte:02x}");
     }
     Ok(signature)
@@ -180,8 +178,7 @@ impl BinanceFuturesClient {
         path: &str,
         body: String,
     ) -> Result<T, BinanceFuturesError> {
-        self.signed_body_request(reqwest::Method::POST, path, body)
-            .await
+        self.signed_body_request(reqwest::Method::POST, path, body).await
     }
 
     async fn delete<T: for<'a> Deserialize<'a>>(
@@ -189,8 +186,7 @@ impl BinanceFuturesClient {
         path: &str,
         body: String,
     ) -> Result<T, BinanceFuturesError> {
-        self.signed_body_request(reqwest::Method::DELETE, path, body)
-            .await
+        self.signed_body_request(reqwest::Method::DELETE, path, body).await
     }
 
     async fn user_stream_request<T: for<'a> Deserialize<'a>>(
@@ -283,7 +279,16 @@ impl BinanceFuturesClient {
         symbol: &str,
     ) -> Result<Option<OrderResponse>, BinanceFuturesError> {
         let query = format!("symbol={symbol}&origClientOrderId={client_order_id}");
-        let response: OrderResponseResult = self.get("/fapi/v1/order", query).await?;
+        let response: OrderResponseResult = match self.get("/fapi/v1/order", query).await {
+            Ok(response) => response,
+            Err(BinanceFuturesError::ReqError(error)) if error.is_timeout() => {
+                // A timed-out point query cannot establish the order's terminal state. Returning
+                // None deliberately hands control to the caller's account-wide reconciliation
+                // path instead of permanently latching execution on a transient REST timeout.
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
         match response {
             OrderResponseResult::Ok(response) => Ok(Some(*response)),
             OrderResponseResult::Err(error) if error.code == -2013 => Ok(None),
@@ -344,8 +349,7 @@ mod tests {
     async fn unsupported_order_shape_is_rejected_without_an_http_request() {
         use hftbacktest::types::{OrdType, TimeInForce};
 
-        let client =
-            super::BinanceFuturesClient::new("http://127.0.0.1:9", "key", "secret").unwrap();
+        let client = super::BinanceFuturesClient::new("http://127.0.0.1:9", "key", "secret").unwrap();
         let unsupported_type = client
             .submit_order(
                 "client-id",
@@ -457,6 +461,30 @@ mod tests {
             started.elapsed() < Duration::from_millis(300),
             "request timeout must bound an accepted connection with no response"
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn order_query_timeout_defers_to_account_reconciliation() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            time::sleep(Duration::from_secs(1)).await;
+        });
+        let client = super::BinanceFuturesClient::new_with_timeout(
+            &format!("http://{address}"),
+            "key",
+            "secret",
+            Duration::from_millis(50),
+        )
+        .unwrap();
+
+        let result = client.query_order("client-id", "BTCUSDT").await.unwrap();
+
+        assert!(result.is_none());
         server.abort();
     }
 }
