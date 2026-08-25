@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, time::Duration};
 
 use chrono::Utc;
 use hftbacktest::types::{OrdType, Side, TimeInForce};
@@ -80,9 +80,20 @@ pub struct BinanceFuturesClient {
 
 impl BinanceFuturesClient {
     pub fn new(url: &str, api_key: &str, secret: &str) -> Result<Self, BinanceFuturesError> {
+        Self::new_with_timeout(url, api_key, secret, Duration::from_secs(5))
+    }
+
+    fn new_with_timeout(
+        url: &str,
+        api_key: &str,
+        secret: &str,
+        request_timeout: Duration,
+    ) -> Result<Self, BinanceFuturesError> {
         Ok(Self {
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(request_timeout)
+                .timeout(request_timeout)
                 .build()?,
             url: url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
