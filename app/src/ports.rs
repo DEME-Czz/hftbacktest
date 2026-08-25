@@ -34,8 +34,14 @@ pub enum PublishEvent {
     AccountStreamDisconnected,
     /// The public market stream is unavailable; outstanding strategy orders must be canceled.
     MarketStreamDisconnected,
+    /// A symbol-level REST reconciliation is about to start. New submissions for the symbol must
+    /// pause until a matching `AccountSnapshotReady` is published.
+    AccountReconciliationStarted {
+        symbol: String,
+    },
     /// Position and strategy-owned open orders were recovered from one REST snapshot after the
-    /// private stream connected. This is the only event that may authorize execution.
+    /// private stream connected or after a symbol-level reconciliation. This is the only event that
+    /// may authorize execution.
     AccountSnapshotReady {
         symbol: String,
     },
