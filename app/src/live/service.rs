@@ -44,6 +44,12 @@ impl AccountReadiness {
         self.symbols.insert(symbol.to_string())
     }
 
+    fn begin_reconciliation(&mut self, symbol: &str) {
+        self.symbols.remove(symbol);
+        self.recovered_snapshots.remove(symbol);
+        self.pending_position_after_fill.remove(symbol);
+    }
+
     fn observe_position(&mut self, symbol: &str, exch_ts: i64, applied: bool) {
         if !applied {
             return;
@@ -294,6 +300,12 @@ impl<C: LiveConnector> LiveService<C> {
                         );
                         warn!("Binance market stream disconnected; active orders are being canceled");
                     }
+                    Some(PublishEvent::AccountReconciliationStarted { symbol }) => {
+                        if self.runtimes.contains_key(&symbol) {
+                            account_readiness.begin_reconciliation(&symbol);
+                            warn!(%symbol, "execution paused while account state is reconciled");
+                        }
+                    }
                     Some(PublishEvent::AccountSnapshotReady { symbol }) => {
                         if self.runtimes.contains_key(&symbol)
                             && account_readiness.reconcile(&symbol)
@@ -482,6 +494,11 @@ mod tests {
     fn account_readiness_requires_position_and_snapshot() {
         let mut readiness = AccountReadiness::default();
         readiness.observe_position("btcusdt", 10, true);
+        assert!(!readiness.contains("btcusdt"));
+        assert!(readiness.reconcile("btcusdt"));
+        assert!(readiness.contains("btcusdt"));
+
+        readiness.begin_reconciliation("btcusdt");
         assert!(!readiness.contains("btcusdt"));
         assert!(readiness.reconcile("btcusdt"));
         assert!(readiness.contains("btcusdt"));
