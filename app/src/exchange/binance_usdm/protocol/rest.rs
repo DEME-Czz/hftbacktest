@@ -14,11 +14,12 @@ fn default_time_in_force() -> TimeInForce {
     TimeInForce::Unsupported
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(untagged)]
-pub enum OrderResponseResult {
-    Ok(Box<OrderResponse>),
-    Err(ErrorResponse),
+fn default_side() -> Side {
+    Side::Unsupported
+}
+
+fn default_status() -> Status {
+    Status::Unsupported
 }
 
 #[derive(Deserialize, Debug)]
@@ -28,39 +29,42 @@ pub enum OpenOrdersResponse {
     Err(ErrorResponse),
 }
 
+/// Binance Testnet and production occasionally differ in auxiliary order-response fields.
+/// Decode the wire response permissively here; callers validate the small set of fields that are
+/// actually required to mutate the local order state before accepting the response.
 #[derive(Deserialize, Debug)]
 pub struct OrderResponse {
-    #[serde(rename = "clientOrderId")]
+    #[serde(rename = "clientOrderId", default)]
     pub client_order_id: String,
-    #[serde(rename = "cumQty", deserialize_with = "from_str_to_f64")]
+    #[serde(rename = "cumQty", default, deserialize_with = "from_str_to_f64")]
     pub cum_qty: f64,
     #[serde(rename = "cumQuote", default, deserialize_with = "from_str_to_f64_opt")]
     pub cum_quote: Option<f64>,
     #[serde(rename = "cumBase", default, deserialize_with = "from_str_to_f64_opt")]
     pub cum_base: Option<f64>,
-    #[serde(rename = "executedQty", deserialize_with = "from_str_to_f64")]
+    #[serde(rename = "executedQty", default, deserialize_with = "from_str_to_f64")]
     pub executed_qty: f64,
-    #[serde(rename = "orderId")]
+    #[serde(rename = "orderId", default)]
     pub order_id: i64,
     #[serde(rename = "avgPrice", default, deserialize_with = "from_str_to_f64_opt")]
     pub avg_price: Option<f64>,
-    #[serde(rename = "origQty", deserialize_with = "from_str_to_f64")]
+    #[serde(rename = "origQty", default, deserialize_with = "from_str_to_f64")]
     pub orig_qty: f64,
-    #[serde(deserialize_with = "from_str_to_f64")]
+    #[serde(default, deserialize_with = "from_str_to_f64")]
     pub price: f64,
     #[serde(rename = "reduceOnly", default)]
     pub reduce_only: bool,
-    #[serde(deserialize_with = "from_str_to_side")]
+    #[serde(default = "default_side", deserialize_with = "from_str_to_side")]
     pub side: Side,
     #[serde(rename = "positionSide", default)]
     pub position_side: String,
-    #[serde(deserialize_with = "from_str_to_status")]
+    #[serde(default = "default_status", deserialize_with = "from_str_to_status")]
     pub status: Status,
     #[serde(rename = "stopPrice", default, deserialize_with = "from_str_to_f64")]
     pub stop_price: f64,
     #[serde(rename = "closePosition", default)]
     pub close_position: bool,
-    #[serde(deserialize_with = "to_lowercase")]
+    #[serde(default, deserialize_with = "to_lowercase")]
     pub symbol: String,
     #[serde(default)]
     pub pair: Option<String>,
@@ -70,7 +74,11 @@ pub struct OrderResponse {
         deserialize_with = "from_str_to_tif"
     )]
     pub time_in_force: TimeInForce,
-    #[serde(rename = "type", deserialize_with = "from_str_to_type")]
+    #[serde(
+        rename = "type",
+        default = "default_order_type",
+        deserialize_with = "from_str_to_type"
+    )]
     pub ty: OrdType,
     #[serde(
         rename = "origType",
@@ -90,7 +98,7 @@ pub struct OrderResponse {
         deserialize_with = "from_str_to_f64_opt"
     )]
     pub price_rate: Option<f64>,
-    #[serde(rename = "updateTime")]
+    #[serde(rename = "updateTime", default)]
     pub update_time: i64,
     #[serde(rename = "workingType", default)]
     pub working_type: String,
