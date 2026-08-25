@@ -33,9 +33,11 @@ impl SafetyState {
         let Some(state) = self.symbols.get_mut(symbol) else {
             return;
         };
-        let crossed_deadline = state.last_market_ms.map_or(now_ms >= self.stale_timeout_ms, |last| {
-            now_ms.saturating_sub(last) >= self.stale_timeout_ms
-        });
+        let crossed_deadline = state
+            .last_market_ms
+            .map_or(now_ms >= self.stale_timeout_ms, |last| {
+                now_ms.saturating_sub(last) >= self.stale_timeout_ms
+            });
         state.last_market_ms = Some(now_ms);
         if crossed_deadline {
             state.stale = true;
