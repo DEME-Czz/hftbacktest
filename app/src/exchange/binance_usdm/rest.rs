@@ -5,12 +5,14 @@ use hftbacktest::types::{OrdType, Side, TimeInForce};
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
+use tracing::warn;
 
 use super::{
     BinanceFuturesError,
     protocol::{
         rest::{
-            self, OpenOrdersResponse, OrderResponse, OrderResponseResult, PositionInformationV3,
+            self, ErrorResponse, OpenOrdersResponse, OrderResponse, OrderResponseResult,
+            PositionInformationV3,
         },
         stream::ListenKey,
     },
@@ -66,6 +68,45 @@ fn decimal_precision(step: f64) -> Result<usize, BinanceFuturesError> {
         }
     }
     Err(BinanceFuturesError::InvalidRequest)
+}
+
+fn parse_query_order_value(
+    value: serde_json::Value,
+) -> Result<Option<OrderResponse>, BinanceFuturesError> {
+    let payload = if let Some(error) = value.get("error") {
+        error.clone()
+    } else if let Some(result) = value.get("result") {
+        result.clone()
+    } else {
+        value
+    };
+
+    if payload.is_null() {
+        return Ok(None);
+    }
+
+    if let Ok(error) = serde_json::from_value::<ErrorResponse>(payload.clone()) {
+        return if error.code == -2013 {
+            Ok(None)
+        } else {
+            Err(BinanceFuturesError::OrderError {
+                code: error.code,
+                msg: error.msg,
+            })
+        };
+    }
+
+    match serde_json::from_value::<OrderResponse>(payload.clone()) {
+        Ok(order) => Ok(Some(order)),
+        Err(error) => {
+            warn!(
+                ?error,
+                response = ?payload,
+                "couldn't decode Binance order query response; deferring to account reconciliation"
+            );
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -178,7 +219,8 @@ impl BinanceFuturesClient {
         path: &str,
         body: String,
     ) -> Result<T, BinanceFuturesError> {
-        self.signed_body_request(reqwest::Method::POST, path, body).await
+        self.signed_body_request(reqwest::Method::POST, path, body)
+            .await
     }
 
     async fn delete<T: for<'a> Deserialize<'a>>(
@@ -186,7 +228,8 @@ impl BinanceFuturesClient {
         path: &str,
         body: String,
     ) -> Result<T, BinanceFuturesError> {
-        self.signed_body_request(reqwest::Method::DELETE, path, body).await
+        self.signed_body_request(reqwest::Method::DELETE, path, body)
+            .await
     }
 
     async fn user_stream_request<T: for<'a> Deserialize<'a>>(
@@ -279,24 +322,16 @@ impl BinanceFuturesClient {
         symbol: &str,
     ) -> Result<Option<OrderResponse>, BinanceFuturesError> {
         let query = format!("symbol={symbol}&origClientOrderId={client_order_id}");
-        let response: OrderResponseResult = match self.get("/fapi/v1/order", query).await {
+        let response: serde_json::Value = match self.get("/fapi/v1/order", query).await {
             Ok(response) => response,
-            Err(BinanceFuturesError::ReqError(error)) if error.is_timeout() => {
-                // A timed-out point query cannot establish the order's terminal state. Returning
-                // None deliberately hands control to the caller's account-wide reconciliation
-                // path instead of permanently latching execution on a transient REST timeout.
+            Err(BinanceFuturesError::ReqError(error))
+                if error.is_timeout() || error.is_decode() =>
+            {
                 return Ok(None);
             }
             Err(error) => return Err(error),
         };
-        match response {
-            OrderResponseResult::Ok(response) => Ok(Some(*response)),
-            OrderResponseResult::Err(error) if error.code == -2013 => Ok(None),
-            OrderResponseResult::Err(error) => Err(BinanceFuturesError::OrderError {
-                code: error.code,
-                msg: error.msg,
-            }),
-        }
+        parse_query_order_value(response)
     }
 
     pub async fn get_position_information(
@@ -331,7 +366,7 @@ impl BinanceFuturesClient {
 mod tests {
     use std::time::Duration;
 
-    use super::{side_str, sign_hmac_sha256};
+    use super::{parse_query_order_value, side_str, sign_hmac_sha256};
     use hftbacktest::types::Side;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -349,7 +384,8 @@ mod tests {
     async fn unsupported_order_shape_is_rejected_without_an_http_request() {
         use hftbacktest::types::{OrdType, TimeInForce};
 
-        let client = super::BinanceFuturesClient::new("http://127.0.0.1:9", "key", "secret").unwrap();
+        let client =
+            super::BinanceFuturesClient::new("http://127.0.0.1:9", "key", "secret").unwrap();
         let unsupported_type = client
             .submit_order(
                 "client-id",
@@ -393,6 +429,44 @@ mod tests {
             signature,
             "3c661234138461fcc7a7d8746c6558c9842d4e10870d2ecbedf7777cad694af9"
         );
+    }
+
+    #[test]
+    fn order_query_parser_accepts_result_envelope() {
+        let response = serde_json::json!({
+            "id": "request-id",
+            "status": 200,
+            "result": {
+                "clientOrderId": "client-id",
+                "cumQty": "0",
+                "cumQuote": "0",
+                "executedQty": "0",
+                "orderId": 123,
+                "avgPrice": "0",
+                "origQty": "0.001",
+                "price": "100.0",
+                "reduceOnly": false,
+                "side": "BUY",
+                "positionSide": "BOTH",
+                "status": "NEW",
+                "stopPrice": "0",
+                "closePosition": false,
+                "symbol": "BTCUSDT",
+                "timeInForce": "GTC",
+                "type": "LIMIT",
+                "origType": "LIMIT",
+                "updateTime": 1234
+            }
+        });
+
+        let parsed = parse_query_order_value(response).unwrap().unwrap();
+        assert_eq!(parsed.client_order_id, "client-id");
+    }
+
+    #[test]
+    fn unknown_order_query_schema_defers_to_reconciliation() {
+        let parsed = parse_query_order_value(serde_json::json!({"unexpected": true})).unwrap();
+        assert!(parsed.is_none());
     }
 
     #[tokio::test]
