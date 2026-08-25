@@ -10,13 +10,12 @@ use tracing::warn;
 use super::{
     BinanceFuturesError,
     protocol::{
-        rest::{
-            self, ErrorResponse, OpenOrdersResponse, OrderResponse, OrderResponseResult,
-            PositionInformationV3,
-        },
+        rest::{self, ErrorResponse, OpenOrdersResponse, OrderResponse, PositionInformationV3},
         stream::ListenKey,
     },
 };
+
+const AMBIGUOUS_ORDER_RESPONSE_CODE: i64 = -1_000_001;
 
 fn side_str(side: Side) -> Result<&'static str, BinanceFuturesError> {
     match side {
@@ -70,16 +69,42 @@ fn decimal_precision(step: f64) -> Result<usize, BinanceFuturesError> {
     Err(BinanceFuturesError::InvalidRequest)
 }
 
-fn parse_query_order_value(
-    value: serde_json::Value,
-) -> Result<Option<OrderResponse>, BinanceFuturesError> {
-    let payload = if let Some(error) = value.get("error") {
+fn unwrap_order_payload(value: serde_json::Value) -> serde_json::Value {
+    if let Some(error) = value.get("error") {
         error.clone()
     } else if let Some(result) = value.get("result") {
         result.clone()
     } else {
         value
-    };
+    }
+}
+
+fn parse_order_response_value(value: serde_json::Value) -> Result<OrderResponse, BinanceFuturesError> {
+    let payload = unwrap_order_payload(value);
+    if let Ok(error) = serde_json::from_value::<ErrorResponse>(payload.clone()) {
+        return Err(BinanceFuturesError::OrderError {
+            code: error.code,
+            msg: error.msg,
+        });
+    }
+
+    serde_json::from_value::<OrderResponse>(payload.clone()).map_err(|error| {
+        warn!(
+            ?error,
+            response = ?payload,
+            "couldn't decode Binance order response"
+        );
+        BinanceFuturesError::OrderError {
+            code: AMBIGUOUS_ORDER_RESPONSE_CODE,
+            msg: "unrecognized Binance order response schema".to_string(),
+        }
+    })
+}
+
+fn parse_query_order_value(
+    value: serde_json::Value,
+) -> Result<Option<OrderResponse>, BinanceFuturesError> {
+    let payload = unwrap_order_payload(value);
 
     if payload.is_null() {
         return Ok(None);
@@ -246,6 +271,33 @@ impl BinanceFuturesClient {
             .await
     }
 
+    async fn resolve_ambiguous_cancel(
+        &self,
+        client_order_id: &str,
+        symbol: &str,
+        reason: &str,
+    ) -> Result<OrderResponse, BinanceFuturesError> {
+        match self.query_order(client_order_id, symbol).await {
+            Ok(Some(order)) => Ok(order),
+            Ok(None) => Err(BinanceFuturesError::OrderError {
+                code: -2011,
+                msg: format!("{reason}; account reconciliation required"),
+            }),
+            Err(error) => {
+                warn!(
+                    %symbol,
+                    %client_order_id,
+                    ?error,
+                    "cancel verification failed; deferring to account reconciliation"
+                );
+                Err(BinanceFuturesError::OrderError {
+                    code: -2011,
+                    msg: format!("{reason}; verification failed; account reconciliation required"),
+                })
+            }
+        }
+    }
+
     pub async fn start_user_data_stream(&self) -> Result<String, reqwest::Error> {
         let response: ListenKey = self.user_stream_request(reqwest::Method::POST).await?;
         Ok(response.listen_key)
@@ -290,14 +342,8 @@ impl BinanceFuturesClient {
         body.push_str(order_type_str(order_type)?);
         body.push_str("&newOrderRespType=RESULT");
 
-        let response: OrderResponseResult = self.post("/fapi/v1/order", body).await?;
-        match response {
-            OrderResponseResult::Ok(response) => Ok(*response),
-            OrderResponseResult::Err(response) => Err(BinanceFuturesError::OrderError {
-                code: response.code,
-                msg: response.msg,
-            }),
-        }
+        let response: serde_json::Value = self.post("/fapi/v1/order", body).await?;
+        parse_order_response_value(response)
     }
 
     pub async fn cancel_order(
@@ -306,13 +352,35 @@ impl BinanceFuturesClient {
         symbol: &str,
     ) -> Result<OrderResponse, BinanceFuturesError> {
         let body = format!("symbol={symbol}&origClientOrderId={client_order_id}");
-        let response: OrderResponseResult = self.delete("/fapi/v1/order", body).await?;
-        match response {
-            OrderResponseResult::Ok(response) => Ok(*response),
-            OrderResponseResult::Err(response) => Err(BinanceFuturesError::OrderError {
-                code: response.code,
-                msg: response.msg,
-            }),
+        let response: serde_json::Value = match self.delete("/fapi/v1/order", body).await {
+            Ok(response) => response,
+            Err(BinanceFuturesError::ReqError(error)) => {
+                warn!(
+                    %symbol,
+                    %client_order_id,
+                    ?error,
+                    "cancel request outcome is ambiguous; verifying order state"
+                );
+                return self
+                    .resolve_ambiguous_cancel(client_order_id, symbol, "cancel request failed")
+                    .await;
+            }
+            Err(error) => return Err(error),
+        };
+
+        match parse_order_response_value(response) {
+            Ok(order) => Ok(order),
+            Err(BinanceFuturesError::OrderError { code, .. })
+                if code == AMBIGUOUS_ORDER_RESPONSE_CODE =>
+            {
+                self.resolve_ambiguous_cancel(
+                    client_order_id,
+                    symbol,
+                    "cancel response schema was not recognized",
+                )
+                .await
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -366,7 +434,10 @@ impl BinanceFuturesClient {
 mod tests {
     use std::time::Duration;
 
-    use super::{parse_query_order_value, side_str, sign_hmac_sha256};
+    use super::{
+        AMBIGUOUS_ORDER_RESPONSE_CODE, parse_order_response_value, parse_query_order_value,
+        side_str, sign_hmac_sha256,
+    };
     use hftbacktest::types::Side;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -432,6 +503,38 @@ mod tests {
     }
 
     #[test]
+    fn order_parser_accepts_result_envelope() {
+        let response = serde_json::json!({
+            "id": "request-id",
+            "status": 200,
+            "result": {
+                "clientOrderId": "client-id",
+                "cumQty": "0",
+                "cumQuote": "0",
+                "executedQty": "0",
+                "orderId": 123,
+                "avgPrice": "0",
+                "origQty": "0.001",
+                "price": "100.0",
+                "reduceOnly": false,
+                "side": "BUY",
+                "positionSide": "BOTH",
+                "status": "NEW",
+                "stopPrice": "0",
+                "closePosition": false,
+                "symbol": "BTCUSDT",
+                "timeInForce": "GTC",
+                "type": "LIMIT",
+                "origType": "LIMIT",
+                "updateTime": 1234
+            }
+        });
+
+        let parsed = parse_order_response_value(response).unwrap();
+        assert_eq!(parsed.client_order_id, "client-id");
+    }
+
+    #[test]
     fn order_query_parser_accepts_result_envelope() {
         let response = serde_json::json!({
             "id": "request-id",
@@ -461,6 +564,16 @@ mod tests {
 
         let parsed = parse_query_order_value(response).unwrap().unwrap();
         assert_eq!(parsed.client_order_id, "client-id");
+    }
+
+    #[test]
+    fn unknown_order_response_schema_is_ambiguous() {
+        let error = parse_order_response_value(serde_json::json!({"unexpected": true})).unwrap_err();
+        assert!(matches!(
+            error,
+            super::BinanceFuturesError::OrderError { code, .. }
+                if code == AMBIGUOUS_ORDER_RESPONSE_CODE
+        ));
     }
 
     #[test]
