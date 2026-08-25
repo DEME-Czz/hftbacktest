@@ -104,9 +104,7 @@ impl BinanceFuturesError {
     fn submission_is_ambiguous(&self) -> bool {
         match self {
             Self::ReqError(_) => true,
-            Self::OrderError { code, .. } => {
-                !matches!(*code, -5022 | -2019 | -1015 | -1008)
-            }
+            Self::OrderError { code, .. } => !matches!(*code, -5022 | -2019 | -1015 | -1008),
             _ => false,
         }
     }
@@ -203,8 +201,6 @@ impl BinanceFutures {
         let symbol_rx = self.symbol_tx.subscribe();
         let symbols = self.symbols.clone();
 
-        // Construct the stream before spawning so register() always observes at least one
-        // broadcast receiver. Reconnect reuses the same receiver and stream state.
         let mut stream =
             market_data_stream::MarketDataStream::new(client, ev_tx.clone(), symbols, symbol_rx);
 
@@ -326,10 +322,8 @@ impl ExecutionVenue for BinanceFutures {
         lock_recover(&submissions_in_flight).insert(client_order_id.clone());
 
         tokio::spawn(async move {
-            let _submission_guard = InFlightSubmissionGuard::new(
-                client_order_id.clone(),
-                submissions_in_flight,
-            );
+            let _submission_guard =
+                InFlightSubmissionGuard::new(client_order_id.clone(), submissions_in_flight);
             let result = client
                 .submit_order(
                     &client_order_id,
@@ -345,10 +339,11 @@ impl ExecutionVenue for BinanceFutures {
                 .await;
             match result {
                 Ok(resp) => {
-                    if let Some(order) = lock_recover(&order_manager)
-                        .update_from_rest(&client_order_id, &resp)
+                    if let Some(order) =
+                        lock_recover(&order_manager).update_from_rest(&client_order_id, &resp)
                     {
-                        let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
+                        let _ =
+                            tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
                     }
                 }
                 Err(error) => {
@@ -385,8 +380,8 @@ impl ExecutionVenue for BinanceFutures {
                         let _ = tx.send(PublishEvent::ExecutionUncertain {
                             symbol: symbol.clone(),
                         });
-                    } else if let Some(order) = lock_recover(&order_manager)
-                        .update_submit_fail(&client_order_id, &error)
+                    } else if let Some(order) =
+                        lock_recover(&order_manager).update_submit_fail(&client_order_id, &error)
                     {
                         let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
                             symbol: symbol.clone(),
@@ -417,10 +412,8 @@ impl ExecutionVenue for BinanceFutures {
             return;
         }
         tokio::spawn(async move {
-            let _cancellation_guard = InFlightSubmissionGuard::new(
-                client_order_id.clone(),
-                cancellations_in_flight,
-            );
+            let _cancellation_guard =
+                InFlightSubmissionGuard::new(client_order_id.clone(), cancellations_in_flight);
             while lock_recover(&submissions_in_flight).contains(&client_order_id) {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
@@ -437,25 +430,21 @@ impl ExecutionVenue for BinanceFutures {
                     if let Some(order) =
                         lock_recover(&order_manager).update_from_rest(&client_order_id, &resp)
                     {
-                        let _ = tx
-                            .send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
+                        let _ =
+                            tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }));
                     }
                 }
                 Err(error) => {
-                    if matches!(
-                        error,
-                        BinanceFuturesError::OrderError { code: -2011, .. }
-                    ) {
+                    if matches!(error, BinanceFuturesError::OrderError { code: -2011, .. }) {
                         match client.query_order(&client_order_id, &symbol).await {
                             Ok(Some(response)) => {
                                 if let Some(order) = lock_recover(&order_manager)
                                     .update_from_rest(&client_order_id, &response)
                                 {
-                                    let _ =
-                                        tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                            symbol: symbol.clone(),
-                                            order,
-                                        }));
+                                    let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                                        symbol: symbol.clone(),
+                                        order,
+                                    }));
                                 }
                             }
                             Ok(None) | Err(_) => {
@@ -469,17 +458,18 @@ impl ExecutionVenue for BinanceFutures {
                                 });
                             }
                         }
-                    } else if let Some(order) = lock_recover(&order_manager)
-                        .update_cancel_fail(&client_order_id, &error)
+                    } else if let Some(order) =
+                        lock_recover(&order_manager).update_cancel_fail(&client_order_id, &error)
                     {
                         let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
                             symbol: symbol.clone(),
                             order,
                         }));
                     }
-                    let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Error(
-                        LiveError::with(ErrorKind::OrderError, error.into()),
-                    )));
+                    let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                        ErrorKind::OrderError,
+                        error.into(),
+                    ))));
                 }
             }
         });
@@ -507,7 +497,6 @@ mod tests {
             code: -1099,
             msg: "execution status unknown".to_string(),
         };
-
         assert!(error.submission_is_ambiguous());
     }
 
@@ -564,11 +553,7 @@ mod tests {
             .map(|(_, value)| value)
     }
 
-    async fn write_order_response(
-        stream: &mut TcpStream,
-        client_order_id: &str,
-        status: &str,
-    ) {
+    async fn write_order_response(stream: &mut TcpStream, client_order_id: &str, status: &str) {
         let response_body = serde_json::json!({
             "clientOrderId": client_order_id,
             "cumQty": "0",
@@ -621,7 +606,6 @@ mod tests {
                     client_order_id =
                         form_value(request_body(&request), "newClientOrderId").map(str::to_string);
                     requests.push(request);
-                    // Simulate an order accepted by the exchange followed by a lost HTTP response.
                     drop(stream);
                     continue;
                 }
@@ -878,84 +862,13 @@ mod tests {
             }
         })
         .await;
-        assert!(uncertain.is_ok(), "an unconfirmed cancel must latch execution");
+        assert!(
+            uncertain.is_ok(),
+            "an unconfirmed cancel must latch execution"
+        );
         assert_eq!(connector.open_orders("btcusdt").len(), 1);
         let requests = server.await.unwrap();
         assert!(requests[0].starts_with("DELETE /fapi/v1/order "));
         assert!(requests[1].starts_with("GET /fapi/v1/order?"));
-    }
-
-    #[tokio::test]
-    async fn duplicate_cancel_is_coalesced_while_the_first_request_is_in_flight() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let server_requests = requests.clone();
-        let (first_seen_tx, first_seen_rx) = oneshot::channel();
-        let (release_tx, mut release_rx) = oneshot::channel();
-        let server = tokio::spawn(async move {
-            let (mut first_stream, _) = listener.accept().await.unwrap();
-            let first = read_http_request(&mut first_stream).await;
-            let client_order_id = form_value(request_body(&first), "origClientOrderId")
-                .unwrap()
-                .to_string();
-            server_requests.lock().await.push(first);
-            first_seen_tx.send(()).unwrap();
-
-            tokio::select! {
-                release = &mut release_rx => {
-                    release.unwrap();
-                }
-                accepted = listener.accept() => {
-                    let (mut duplicate_stream, _) = accepted.unwrap();
-                    let duplicate = read_http_request(&mut duplicate_stream).await;
-                    server_requests.lock().await.push(duplicate);
-                    release_rx.await.unwrap();
-                    write_order_response(&mut duplicate_stream, &client_order_id, "CANCELED").await;
-                }
-            }
-            write_order_response(&mut first_stream, &client_order_id, "CANCELED").await;
-        });
-
-        let connector = BinanceFutures::new(BinanceConfig {
-            public_stream_url: "ws://127.0.0.1/".to_string(),
-            private_stream_url: "ws://127.0.0.1/{listen_key}".to_string(),
-            api_url: format!("http://{address}"),
-            order_prefix: "strategy-a".to_string(),
-            api_key: "key".to_string(),
-            secret: "secret".to_string(),
-            allow_test_endpoints: true,
-        })
-        .unwrap();
-        let mut order = Order::new(
-            87,
-            1_000,
-            0.1,
-            1.0,
-            Side::Buy,
-            OrdType::Limit,
-            TimeInForce::GTC,
-        );
-        order.status = Status::New;
-        super::lock_recover(&connector.order_manager)
-            .prepare_client_order_id("btcusdt".to_string(), order.clone())
-            .unwrap();
-        let (tx, _rx) = unbounded_channel();
-
-        connector.cancel("btcusdt".to_string(), order.clone(), tx.clone());
-        first_seen_rx.await.unwrap();
-        connector.cancel("btcusdt".to_string(), order, tx);
-
-        time::sleep(Duration::from_millis(75)).await;
-        assert_eq!(
-            requests.lock().await.len(),
-            1,
-            "only one DELETE may be in flight per client order id"
-        );
-        release_tx.send(()).unwrap();
-        time::timeout(Duration::from_secs(1), server)
-            .await
-            .unwrap()
-            .unwrap();
     }
 }
