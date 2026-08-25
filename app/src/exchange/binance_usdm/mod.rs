@@ -935,7 +935,10 @@ mod tests {
 
         assert!(reconciliation_started);
         assert!(ready);
-        assert!(!uncertain, "confirmed reconciliation must not latch execution");
+        assert!(
+            !uncertain,
+            "confirmed reconciliation must not latch execution"
+        );
         assert!(connector.open_orders("btcusdt").is_empty());
         let requests = server.await.unwrap();
         assert_eq!(requests.len(), 4);
