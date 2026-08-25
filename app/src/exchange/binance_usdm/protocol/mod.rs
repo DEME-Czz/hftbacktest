@@ -15,11 +15,14 @@ fn from_str_to_side<'de, D>(deserializer: D) -> Result<Side, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)?;
-    match s {
+    let s = String::deserialize(deserializer)?;
+    match s.as_str() {
         "BUY" => Ok(Side::Buy),
         "SELL" => Ok(Side::Sell),
-        s => Err(Error::invalid_value(Unexpected::Other(s), &"BUY or SELL")),
+        value => Err(Error::invalid_value(
+            Unexpected::Other(value),
+            &"BUY or SELL",
+        )),
     }
 }
 
@@ -27,16 +30,16 @@ fn from_str_to_status<'de, D>(deserializer: D) -> Result<Status, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)?;
-    match s {
-        "NEW" => Ok(Status::New),
-        "PARTIALLY_FILLED" => Ok(Status::PartiallyFilled),
-        "FILLED" => Ok(Status::Filled),
-        "CANCELED" => Ok(Status::Canceled),
-        "REJECTED" => Ok(Status::Rejected),
-        "EXPIRED" | "EXPIRED_IN_MATCH" => Ok(Status::Expired),
-        _ => Ok(Status::Unsupported),
-    }
+    let s = String::deserialize(deserializer)?;
+    Ok(match s.as_str() {
+        "NEW" => Status::New,
+        "PARTIALLY_FILLED" => Status::PartiallyFilled,
+        "FILLED" => Status::Filled,
+        "CANCELED" => Status::Canceled,
+        "REJECTED" => Status::Rejected,
+        "EXPIRED" | "EXPIRED_IN_MATCH" => Status::Expired,
+        _ => Status::Unsupported,
+    })
 }
 
 /// The engine intentionally trades only LIMIT/MARKET. New or external Binance order types are
@@ -45,8 +48,8 @@ fn from_str_to_type<'de, D>(deserializer: D) -> Result<OrdType, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)?;
-    Ok(match s {
+    let s = String::deserialize(deserializer)?;
+    Ok(match s.as_str() {
         "LIMIT" => OrdType::Limit,
         "MARKET" => OrdType::Market,
         _ => OrdType::Unsupported,
@@ -59,8 +62,8 @@ fn from_str_to_tif<'de, D>(deserializer: D) -> Result<TimeInForce, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)?;
-    Ok(match s {
+    let s = String::deserialize(deserializer)?;
+    Ok(match s.as_str() {
         "GTC" => TimeInForce::GTC,
         "IOC" => TimeInForce::IOC,
         "FOK" => TimeInForce::FOK,
@@ -88,29 +91,12 @@ impl Visitor<'_> for F64Visitor {
             value.parse::<f64>().map(Some).map_err(Error::custom)
         }
     }
-}
 
-struct OptionF64Visitor;
-
-impl<'de> Visitor<'de> for OptionF64Visitor {
-    type Value = Option<f64>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("an optional string containing an f64 number")
-    }
-
-    fn visit_none<E>(self) -> Result<Self::Value, E>
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
     where
-        E: Error,
+        E: de::Error,
     {
-        Ok(None)
-    }
-
-    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_str(F64Visitor)
+        self.visit_str(&value)
     }
 }
 
@@ -119,23 +105,15 @@ where
     D: Deserializer<'de>,
 {
     deserializer
-        .deserialize_str(F64Visitor)
+        .deserialize_string(F64Visitor)
         .map(|value| value.unwrap_or(0.0))
-}
-
-pub fn from_str_to_f64_opt<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserializer.deserialize_option(OptionF64Visitor)
 }
 
 pub fn to_lowercase<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let value: &str = Deserialize::deserialize(deserializer)?;
-    Ok(value.to_lowercase())
+    Ok(String::deserialize(deserializer)?.to_lowercase())
 }
 
 pub type PxQty = (f64, f64);
