@@ -144,10 +144,7 @@ pub struct PositionInformationV3 {
     pub initial_margin: f64,
     #[serde(rename = "maintMargin", deserialize_with = "from_str_to_f64")]
     pub maint_margin: f64,
-    #[serde(
-        rename = "positionInitialMargin",
-        deserialize_with = "from_str_to_f64"
-    )]
+    #[serde(rename = "positionInitialMargin", deserialize_with = "from_str_to_f64")]
     pub position_initial_margin: f64,
     #[serde(
         rename = "openOrderInitialMargin",
