@@ -477,20 +477,20 @@ fn live_symbol(event: &LiveEvent) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         sync::{Arc, Mutex},
-        time::Duration,
     };
 
     use hftbacktest::{
         strategy::{BuiltinStrategy, BuiltinStrategyConfig, GridConfig},
         types::{Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT, LiveEvent, Order},
     };
-    use tokio::{sync::mpsc::UnboundedSender, time};
+    use tokio::sync::mpsc::UnboundedSender;
 
-    use super::{AccountReadiness, LiveService, StrategyRuntimes};
+    use super::{AccountReadiness, StrategyRuntimes};
     use crate::{
         live::{config::SafetyConfig, risk::RiskConfig, runtime::LiveStrategyRuntime},
-        ports::{ExecutionVenue, MarketDataSource, PublishEvent, RunMode, TradingInstrument},
+        ports::{ExecutionVenue, MarketDataSource, PublishEvent, TradingInstrument},
     };
 
     #[derive(Clone)]
@@ -568,21 +568,20 @@ mod tests {
     }
 
     fn test_runtimes() -> StrategyRuntimes {
-        let config = BuiltinStrategyConfig::Grid {
-            config: GridConfig {
-                relative_half_spread: 0.0005,
-                relative_grid_interval: 0.0005,
-                grid_num: 1,
-                min_grid_step: 0.1,
-                skew: 0.0,
-                order_qty: 0.001,
-                max_position: 0.003,
-            },
-        };
+        let config = BuiltinStrategyConfig::Grid(GridConfig {
+            relative_half_spread: 0.0005,
+            relative_grid_interval: 0.0005,
+            grid_num: 1,
+            min_grid_step: 0.1,
+            skew: 0.0,
+            order_qty: 0.001,
+            max_position: 0.003,
+        });
+        let strategy = BuiltinStrategy::from_config(config).unwrap();
         let mut runtimes = StrategyRuntimes::new();
         runtimes.insert(
             "btcusdt".to_string(),
-            LiveStrategyRuntime::new("btcusdt".to_string(), 0.1, 0.001, config.build().unwrap()),
+            LiveStrategyRuntime::new("btcusdt".to_string(), 0.1, 0.001, strategy),
         );
         runtimes
     }
