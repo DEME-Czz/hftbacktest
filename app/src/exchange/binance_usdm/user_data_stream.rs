@@ -34,8 +34,8 @@ pub struct UserDataStream {
 }
 
 enum UserStreamFrame {
-    Text(String),
-    Ping(Instant),
+    Text(String, Instant),
+    Activity(Instant),
     Terminal(BinanceFuturesError),
 }
 
@@ -146,17 +146,20 @@ impl UserDataStream {
     fn process_frame(
         &self,
         frame: UserStreamFrame,
-        last_ping: &mut Instant,
+        last_activity: &mut Instant,
     ) -> Result<(), BinanceFuturesError> {
         match frame {
-            UserStreamFrame::Text(text) => match serde_json::from_str::<Stream>(&text) {
-                Ok(Stream::EventStream(stream)) => self.process_message(stream)?,
-                Ok(Stream::Result(result)) => {
-                    debug!(?result, "user stream response received");
+            UserStreamFrame::Text(text, received_at) => {
+                *last_activity = received_at;
+                match serde_json::from_str::<Stream>(&text) {
+                    Ok(Stream::EventStream(stream)) => self.process_message(stream)?,
+                    Ok(Stream::Result(result)) => {
+                        debug!(?result, "user stream response received");
+                    }
+                    Err(error) => error!(?error, %text, "couldn't parse user stream"),
                 }
-                Err(error) => error!(?error, %text, "couldn't parse user stream"),
-            },
-            UserStreamFrame::Ping(received_at) => *last_ping = received_at,
+            }
+            UserStreamFrame::Activity(received_at) => *last_activity = received_at,
             UserStreamFrame::Terminal(error) => return Err(error),
         }
         Ok(())
@@ -169,13 +172,19 @@ impl UserDataStream {
         let reader_task = tokio::spawn(async move {
             loop {
                 let (frame, terminal) = match read.next().await {
-                    Some(Ok(Message::Text(text))) => {
-                        (UserStreamFrame::Text(text.to_string()), false)
-                    }
+                    Some(Ok(Message::Text(text))) => (
+                        UserStreamFrame::Text(text.to_string(), Instant::now()),
+                        false,
+                    ),
                     Some(Ok(Message::Ping(data))) => match write.send(Message::Pong(data)).await {
-                        Ok(()) => (UserStreamFrame::Ping(Instant::now()), false),
+                        Ok(()) => (UserStreamFrame::Activity(Instant::now()), false),
                         Err(error) => (UserStreamFrame::Terminal(error.into()), true),
                     },
+                    Some(Ok(Message::Pong(_)))
+                    | Some(Ok(Message::Binary(_)))
+                    | Some(Ok(Message::Frame(_))) => {
+                        (UserStreamFrame::Activity(Instant::now()), false)
+                    }
                     Some(Ok(Message::Close(close_frame))) => (
                         UserStreamFrame::Terminal(BinanceFuturesError::ConnectionAbort(
                             close_frame
@@ -184,9 +193,6 @@ impl UserDataStream {
                         )),
                         true,
                     ),
-                    Some(Ok(Message::Binary(_)))
-                    | Some(Ok(Message::Frame(_)))
-                    | Some(Ok(Message::Pong(_))) => continue,
                     Some(Err(error)) => (UserStreamFrame::Terminal(error.into()), true),
                     None => (
                         UserStreamFrame::Terminal(BinanceFuturesError::ConnectionInterrupted),
@@ -200,8 +206,8 @@ impl UserDataStream {
         });
         let _reader_guard = UserStreamReaderGuard(reader_task);
         let mut interval = time::interval(Duration::from_secs(60 * 30));
-        let mut ping_checker = time::interval(Duration::from_secs(10));
-        let mut last_ping = Instant::now();
+        let mut activity_checker = time::interval(Duration::from_secs(10));
+        let mut last_activity = Instant::now();
 
         bootstrap_recovery_barrier(
             &mut frame_rx,
@@ -211,7 +217,7 @@ impl UserDataStream {
                 self.order_manager.clone(),
                 self.ev_tx.clone(),
             ),
-            |frame| self.process_frame(frame, &mut last_ping),
+            |frame| self.process_frame(frame, &mut last_activity),
             |()| publish_account_snapshot_ready(&self.instruments, &self.ev_tx),
         )
         .await?;
@@ -227,14 +233,14 @@ impl UserDataStream {
                         }
                     });
                 }
-                _ = ping_checker.tick() => {
-                    if last_ping.elapsed() > Duration::from_secs(300) {
-                        warn!("user data stream ping timeout");
+                _ = activity_checker.tick() => {
+                    if last_activity.elapsed() > Duration::from_secs(300) {
+                        warn!("user data stream activity timeout");
                         return Err(BinanceFuturesError::ConnectionInterrupted);
                     }
                 }
                 frame = frame_rx.recv() => match frame {
-                    Some(frame) => self.process_frame(frame, &mut last_ping)?,
+                    Some(frame) => self.process_frame(frame, &mut last_activity)?,
                     None => return Err(BinanceFuturesError::ConnectionInterrupted),
                 }
             }
