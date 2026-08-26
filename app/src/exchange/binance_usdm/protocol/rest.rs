@@ -10,13 +10,6 @@ fn default_time_in_force() -> TimeInForce {
     TimeInForce::Unsupported
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(untagged)]
-pub enum OpenOrdersResponse {
-    Ok(Vec<OrderResponse>),
-    Err(ErrorResponse),
-}
-
 /// Binance 的订单响应在 Testnet、生产环境及不同 REST 入口之间会携带不同的附加字段。
 /// 本地订单状态机只解码真正用于订单恢复和状态推进的最小字段集合；其余 Binance 字段
 /// 由 Serde 自动忽略，避免非核心字段变化导致整个交易执行链路反序列化失败。
