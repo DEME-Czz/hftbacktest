@@ -314,8 +314,8 @@ impl MarketDataStream {
         let (ws_stream, _) = connect_websocket(url).await?;
         let (mut write, mut read) = ws_stream.split();
         self.reset_connection_state();
-        let mut ping_checker = time::interval(Duration::from_secs(10));
-        let mut last_ping = Instant::now();
+        let mut activity_checker = time::interval(Duration::from_secs(10));
+        let mut last_activity = Instant::now();
         let mut subscribed = HashSet::new();
 
         let registered_symbols: Vec<_> = lock_recover(&self.symbols).iter().cloned().collect();
@@ -333,8 +333,9 @@ impl MarketDataStream {
                 Some((symbol, result)) = self.rest_rx.recv() => {
                     self.process_snapshot(symbol, result?)?;
                 }
-                _ = ping_checker.tick() => {
-                    if last_ping.elapsed() > Duration::from_secs(300) {
+                _ = activity_checker.tick() => {
+                    if last_activity.elapsed() > Duration::from_secs(300) {
+                        warn!("market data stream activity timeout");
                         return Err(BinanceFuturesError::ConnectionInterrupted);
                     }
                 }
@@ -352,6 +353,7 @@ impl MarketDataStream {
                 },
                 message = read.next() => match message {
                     Some(Ok(Message::Text(text))) => {
+                        last_activity = Instant::now();
                         match serde_json::from_str::<Stream>(&text) {
                             Ok(Stream::EventStream(stream)) => self.process_message(stream)?,
                             Ok(Stream::Result(result)) => debug!(?result, "Binance subscription response"),
@@ -359,17 +361,19 @@ impl MarketDataStream {
                         }
                     }
                     Some(Ok(Message::Ping(data))) => {
+                        last_activity = Instant::now();
                         write.send(Message::Pong(data)).await?;
-                        last_ping = Instant::now();
+                    }
+                    Some(Ok(Message::Pong(_)))
+                    | Some(Ok(Message::Binary(_)))
+                    | Some(Ok(Message::Frame(_))) => {
+                        last_activity = Instant::now();
                     }
                     Some(Ok(Message::Close(close_frame))) => {
                         return Err(BinanceFuturesError::ConnectionAbort(
                             close_frame.map(|f| f.to_string()).unwrap_or_default()
                         ));
                     }
-                    Some(Ok(Message::Binary(_)))
-                    | Some(Ok(Message::Frame(_)))
-                    | Some(Ok(Message::Pong(_))) => {}
                     Some(Err(error)) => return Err(error.into()),
                     None => return Err(BinanceFuturesError::ConnectionInterrupted),
                 }
@@ -517,7 +521,6 @@ mod tests {
         }
         let mut stream = MarketDataStream::new(client, event_tx, symbols, symbol_tx.subscribe());
         symbol_tx.send("btcusdt".to_string()).unwrap();
-
         let url = format!("ws://{address}");
         assert!(stream.connect(&url).await.is_err());
         assert!(stream.connect(&url).await.is_err());
