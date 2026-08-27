@@ -61,7 +61,8 @@ pub struct ErrorResponse {
 
 /// `/fapi/v1/openOrders` 可能返回订单数组或 Binance 错误对象。
 /// OrderResponse 已对 openOrders 不提供的 cumQty 等非核心字段做兼容处理。
-#[derive(Deserialize, Debug)]\#[serde(untagged)]
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
 pub enum OpenOrdersResponse {
     Ok(Vec<OrderResponse>),
     Err(ErrorResponse),
