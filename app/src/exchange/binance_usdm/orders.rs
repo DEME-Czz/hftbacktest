@@ -78,6 +78,14 @@ impl OrderManager {
             order_ext.order.time_in_force = resp.order.time_in_force;
             order_ext.order.exch_timestamp = resp.transaction_time * 1_000_000;
             order_ext.order.status = resp.order.order_status;
+            if !matches!(
+                order_ext.order.status,
+                Status::New | Status::PartiallyFilled
+            ) {
+                // A terminal exchange update is authoritative. Any local submit/cancel request
+                // is finished and must not keep this order visible as pending.
+                order_ext.order.req = Status::None;
+            }
             order_ext.order.exec_price_tick =
                 (resp.order.last_filled_price / order_ext.order.tick_size).round() as i64;
             order_ext.order.exec_qty = resp.order.order_last_filled_qty;
@@ -433,7 +441,12 @@ impl OrderManager {
         self.orders
             .values()
             .filter(|order_ext| {
+                let has_client_order_id = self.order_id_map.contains_key(&RefSymbolOrderId::new(
+                    &order_ext.symbol,
+                    order_ext.order.order_id,
+                ));
                 order_ext.symbol == symbol
+                    && has_client_order_id
                     && (order_ext.order.active() || order_ext.order.pending())
             })
             .map(|order_ext| order_ext.order.clone())
