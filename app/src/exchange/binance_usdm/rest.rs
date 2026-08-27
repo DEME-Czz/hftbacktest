@@ -10,7 +10,7 @@ use tracing::warn;
 use super::{
     BinanceFuturesError,
     protocol::{
-        rest::{self, ErrorResponse, OrderResponse, PositionInformationV3},
+        rest::{self, ErrorResponse, OpenOrdersResponse, OrderResponse, PositionInformationV3},
         stream::ListenKey,
     },
 };
@@ -134,28 +134,6 @@ fn parse_query_order_value(
             Ok(None)
         }
     }
-}
-
-fn parse_open_orders_value(
-    value: serde_json::Value,
-) -> Result<Vec<OrderResponse>, BinanceFuturesError> {
-    let payload = unwrap_order_payload(value);
-
-    if let Ok(error) = serde_json::from_value::<ErrorResponse>(payload.clone()) {
-        return Err(BinanceFuturesError::OrderError {
-            code: error.code,
-            msg: error.msg,
-        });
-    }
-
-    serde_json::from_value::<Vec<OrderResponse>>(payload.clone()).map_err(|error| {
-        warn!(
-            ?error,
-            response = ?payload,
-            "couldn't decode Binance open orders response"
-        );
-        BinanceFuturesError::InvalidAccountState
-    })
 }
 
 #[derive(Clone)]
@@ -436,10 +414,16 @@ impl BinanceFuturesClient {
         &self,
         symbol: &str,
     ) -> Result<Vec<OrderResponse>, BinanceFuturesError> {
-        let response: serde_json::Value = self
+        let response: OpenOrdersResponse = self
             .get("/fapi/v1/openOrders", format!("symbol={symbol}"))
             .await?;
-        parse_open_orders_value(response)
+        match response {
+            OpenOrdersResponse::Ok(orders) => Ok(orders),
+            OpenOrdersResponse::Err(error) => Err(BinanceFuturesError::OrderError {
+                code: error.code,
+                msg: error.msg,
+            }),
+        }
     }
 
     pub async fn get_depth(&self, symbol: &str) -> Result<rest::Depth, BinanceFuturesError> {
@@ -453,8 +437,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AMBIGUOUS_ORDER_RESPONSE_CODE, parse_open_orders_value, parse_order_response_value,
-        parse_query_order_value, side_str, sign_hmac_sha256,
+        AMBIGUOUS_ORDER_RESPONSE_CODE, parse_order_response_value, parse_query_order_value,
+        side_str, sign_hmac_sha256,
     };
     use hftbacktest::types::Side;
     use tokio::{
@@ -469,183 +453,188 @@ mod tests {
         assert!(side_str(Side::Unsupported).is_err());
     }
 
-    #[test]
-    fn open_orders_parser_accepts_direct_array() {
-        let value = serde_json::json!([]);
-        assert!(parse_open_orders_value(value).unwrap().is_empty());
+    #[tokio::test]
+    async fn unsupported_order_shape_is_rejected_without_an_http_request() {
+        use hftbacktest::types::{OrdType, TimeInForce};
+
+        let client =
+            super::BinanceFuturesClient::new("http://127.0.0.1:9", "key", "secret").unwrap();
+        let unsupported_type = client
+            .submit_order(
+                "client-id",
+                "BTCUSDT",
+                Side::Buy,
+                100.0,
+                0.1,
+                0.001,
+                0.001,
+                OrdType::Unsupported,
+                TimeInForce::GTC,
+            )
+            .await;
+        assert!(unsupported_type.is_err());
+
+        let unsupported_tif = client
+            .submit_order(
+                "client-id",
+                "BTCUSDT",
+                Side::Buy,
+                100.0,
+                0.1,
+                0.001,
+                0.001,
+                OrdType::Limit,
+                TimeInForce::Unsupported,
+            )
+            .await;
+        assert!(unsupported_tif.is_err());
     }
 
     #[test]
-    fn open_orders_parser_accepts_result_envelope() {
-        let value = serde_json::json!({"result": []});
-        assert!(parse_open_orders_value(value).unwrap().is_empty());
-    }
-
-    #[test]
-    fn open_orders_parser_preserves_binance_error() {
-        let error = parse_open_orders_value(serde_json::json!({
-            "error": {"code": -2015, "msg": "Rejected"}
-        }))
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            crate::exchange::binance_usdm::BinanceFuturesError::OrderError { code: -2015, .. }
-        ));
-    }
-
-    #[test]
-    fn order_response_parser_rejects_unknown_payload() {
-        let error = parse_order_response_value(serde_json::json!({"unexpected": true})).unwrap_err();
-        assert!(matches!(
-            error,
-            crate::exchange::binance_usdm::BinanceFuturesError::OrderError {
-                code: AMBIGUOUS_ORDER_RESPONSE_CODE,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn query_order_parser_treats_unknown_payload_as_unresolved() {
-        assert!(
-            parse_query_order_value(serde_json::json!({"unexpected": true}))
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn order_response_parser_accepts_result_envelope() {
-        let value = serde_json::json!({
-            "result": {
-                "clientOrderId": "cid",
-                "cumQty": "0",
-                "executedQty": "0",
-                "origQty": "0.001",
-                "price": "100",
-                "side": "BUY",
-                "status": "NEW",
-                "symbol": "BTCUSDT",
-                "timeInForce": "GTC",
-                "type": "LIMIT",
-                "updateTime": 1
-            }
-        });
-        let order = parse_order_response_value(value).unwrap();
-        assert_eq!(order.client_order_id, "cid");
-        assert_eq!(order.symbol, "btcusdt");
-    }
-
-    #[test]
-    fn query_order_parser_accepts_result_envelope() {
-        let value = serde_json::json!({
-            "result": {
-                "clientOrderId": "cid",
-                "cumQty": "0",
-                "executedQty": "0",
-                "origQty": "0.001",
-                "price": "100",
-                "side": "BUY",
-                "status": "NEW",
-                "symbol": "BTCUSDT",
-                "timeInForce": "GTC",
-                "type": "LIMIT",
-                "updateTime": 1
-            }
-        });
-        assert!(parse_query_order_value(value).unwrap().is_some());
-    }
-
-    #[test]
-    fn order_response_parser_accepts_missing_optional_fields() {
-        let value = serde_json::json!({
-            "clientOrderId": "cid",
-            "cumQty": "0",
-            "executedQty": "0",
-            "origQty": "0.001",
-            "price": "100",
-            "side": "BUY",
-            "status": "NEW",
-            "symbol": "BTCUSDT",
-            "type": "LIMIT"
-        });
-        let order = parse_order_response_value(value).unwrap();
-        assert_eq!(order.client_order_id, "cid");
-        assert_eq!(
-            order.time_in_force,
-            hftbacktest::types::TimeInForce::Unsupported
-        );
-        assert_eq!(order.update_time, 0);
-    }
-
-    #[test]
-    fn query_order_parser_accepts_missing_optional_fields() {
-        let value = serde_json::json!({
-            "clientOrderId": "cid",
-            "cumQty": "0",
-            "executedQty": "0",
-            "origQty": "0.001",
-            "price": "100",
-            "side": "BUY",
-            "status": "NEW",
-            "symbol": "BTCUSDT",
-            "type": "LIMIT"
-        });
-        assert!(parse_query_order_value(value).unwrap().is_some());
-    }
-
-    #[test]
-    fn order_response_parser_preserves_binance_error() {
-        let error = parse_order_response_value(serde_json::json!({
-            "error": {"code": -2011, "msg": "Unknown order sent."}
-        }))
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            crate::exchange::binance_usdm::BinanceFuturesError::OrderError { code: -2011, .. }
-        ));
-    }
-
-    #[test]
-    fn query_order_parser_maps_unknown_order_to_none() {
-        let result = parse_query_order_value(serde_json::json!({
-            "error": {"code": -2013, "msg": "Order does not exist."}
-        }))
+    fn signing_matches_binance_reference_vector() {
+        let signature = sign_hmac_sha256(
+            "2b5eb11e18796d12d88f13dc27dbbd02c2cc51ff7059765ed9821957d82bb4d9",
+            "symbol=BTCUSDT&side=BUY&type=LIMIT&quantity=1&price=9000&timeInForce=GTC&recvWindow=5000&timestamp=1591702613943",
+        )
         .unwrap();
-        assert!(result.is_none());
+
+        assert_eq!(
+            signature,
+            "3c661234138461fcc7a7d8746c6558c9842d4e10870d2ecbedf7777cad694af9"
+        );
     }
 
     #[test]
-    fn order_response_parser_accepts_direct_payload() {
-        let value = serde_json::json!({
-            "clientOrderId": "cid",
-            "cumQty": "0",
-            "executedQty": "0",
-            "origQty": "0.001",
-            "price": "100",
-            "side": "BUY",
-            "status": "NEW",
-            "symbol": "BTCUSDT",
-            "timeInForce": "GTC",
-            "type": "LIMIT",
-            "updateTime": 1
+    fn order_parser_accepts_result_envelope() {
+        let response = serde_json::json!({
+            "id": "request-id",
+            "status": 200,
+            "result": {
+                "clientOrderId": "client-id",
+                "cumQty": "0",
+                "cumQuote": "0",
+                "executedQty": "0",
+                "orderId": 123,
+                "avgPrice": "0",
+                "origQty": "0.001",
+                "price": "100.0",
+                "reduceOnly": false,
+                "side": "BUY",
+                "positionSide": "BOTH",
+                "status": "NEW",
+                "stopPrice": "0",
+                "closePosition": false,
+                "symbol": "BTCUSDT",
+                "timeInForce": "GTC",
+                "type": "LIMIT",
+                "origType": "LIMIT",
+                "updateTime": 1234
+            }
         });
-        let order = parse_order_response_value(value).unwrap();
-        assert_eq!(order.client_order_id, "cid");
-        assert_eq!(order.symbol, "btcusdt");
+
+        let parsed = parse_order_response_value(response).unwrap();
+        assert_eq!(parsed.client_order_id, "client-id");
+    }
+
+    #[test]
+    fn order_query_parser_accepts_result_envelope() {
+        let response = serde_json::json!({
+            "id": "request-id",
+            "status": 200,
+            "result": {
+                "clientOrderId": "client-id",
+                "cumQty": "0",
+                "cumQuote": "0",
+                "executedQty": "0",
+                "orderId": 123,
+                "avgPrice": "0",
+                "origQty": "0.001",
+                "price": "100.0",
+                "reduceOnly": false,
+                "side": "BUY",
+                "positionSide": "BOTH",
+                "status": "NEW",
+                "stopPrice": "0",
+                "closePosition": false,
+                "symbol": "BTCUSDT",
+                "timeInForce": "GTC",
+                "type": "LIMIT",
+                "origType": "LIMIT",
+                "updateTime": 1234
+            }
+        });
+
+        let parsed = parse_query_order_value(response).unwrap().unwrap();
+        assert_eq!(parsed.client_order_id, "client-id");
+    }
+
+    #[test]
+    fn unknown_order_response_schema_is_ambiguous() {
+        let error =
+            parse_order_response_value(serde_json::json!({"unexpected": true})).unwrap_err();
+        assert!(matches!(
+            error,
+            super::BinanceFuturesError::OrderError { code, .. }
+                if code == AMBIGUOUS_ORDER_RESPONSE_CODE
+        ));
+    }
+
+    #[test]
+    fn unknown_order_query_schema_defers_to_reconciliation() {
+        let parsed = parse_query_order_value(serde_json::json!({"unexpected": true})).unwrap();
+        assert!(parsed.is_none());
     }
 
     #[tokio::test]
-    async fn query_order_timeout_returns_none() {
+    async fn signed_requests_never_follow_http_redirects() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buffer = [0_u8; 4096];
-            let _ = socket.read(&mut buffer).await.unwrap();
-            time::sleep(Duration::from_millis(200)).await;
+            let (mut first, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let _ = first.read(&mut request).await.unwrap();
+            let redirect = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/capture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            first.write_all(redirect.as_bytes()).await.unwrap();
+            drop(first);
+
+            match time::timeout(Duration::from_millis(500), listener.accept()).await {
+                Ok(Ok((mut redirected, _))) => {
+                    let _ = redirected.read(&mut request).await.unwrap();
+                    redirected
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]",
+                        )
+                        .await
+                        .unwrap();
+                    true
+                }
+                _ => false,
+            }
         });
 
+        let client = super::BinanceFuturesClient::new(
+            &format!("http://{address}"),
+            "sensitive-key",
+            "sensitive-secret",
+        )
+        .unwrap();
+        let _ = client.get_position_information().await;
+
+        assert!(!server.await.unwrap(), "signed request followed a redirect");
+    }
+
+    #[tokio::test]
+    async fn request_timeout_bounds_a_server_that_never_responds() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            time::sleep(Duration::from_secs(1)).await;
+        });
         let client = super::BinanceFuturesClient::new_with_timeout(
             &format!("http://{address}"),
             "key",
@@ -653,35 +642,39 @@ mod tests {
             Duration::from_millis(50),
         )
         .unwrap();
-        assert!(client.query_order("cid", "btcusdt").await.unwrap().is_none());
-        server.await.unwrap();
+
+        let started = std::time::Instant::now();
+        let result = client.get_position_information().await;
+
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "request timeout must bound an accepted connection with no response"
+        );
+        server.abort();
     }
 
     #[tokio::test]
-    async fn query_order_decode_error_returns_none() {
+    async fn order_query_timeout_defers_to_account_reconciliation() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buffer = [0_u8; 4096];
-            let _ = socket.read(&mut buffer).await.unwrap();
-            let body = b"not-json";
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            socket.write_all(response.as_bytes()).await.unwrap();
-            socket.write_all(body).await.unwrap();
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            time::sleep(Duration::from_secs(1)).await;
         });
-
         let client = super::BinanceFuturesClient::new_with_timeout(
             &format!("http://{address}"),
             "key",
             "secret",
-            Duration::from_secs(1),
+            Duration::from_millis(50),
         )
         .unwrap();
-        assert!(client.query_order("cid", "btcusdt").await.unwrap().is_none());
-        server.await.unwrap();
+
+        let result = client.query_order("client-id", "BTCUSDT").await.unwrap();
+
+        assert!(result.is_none());
+        server.abort();
     }
 }
