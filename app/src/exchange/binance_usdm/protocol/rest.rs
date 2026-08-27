@@ -14,11 +14,11 @@ fn default_order_type() -> OrdType {
     OrdType::Unsupported
 }
 
-/// Binance 的下单、撤单和查询订单响应。
+/// Binance 的订单响应。
 ///
-/// 注意：Binance 不同 REST 入口返回的订单字段并不完全一致，因此这里只要求交易核心
-/// 真正需要且各订单详情响应稳定提供的字段。对于恢复流程不需要的字段使用默认值，
-/// 避免 Testnet / Production 或不同 endpoint 的附加字段差异阻断执行链路。
+/// 不同 REST 入口的字段并不完全一致。例如 openOrders 在 Testnet 中不返回 cumQty，
+/// 因此恢复流程不依赖的数值字段允许缺失并使用默认值。真正影响订单身份和状态的
+/// clientOrderId / side / status / symbol 仍保持必填。
 #[derive(Deserialize, Debug)]
 pub struct OrderResponse {
     #[serde(rename = "clientOrderId")]
@@ -53,65 +53,18 @@ pub struct OrderResponse {
     pub update_time: i64,
 }
 
-/// `/fapi/v1/openOrders` 的最小 DTO。
-///
-/// openOrders 与 submit/query/cancel 的响应不是同一个 schema。例如 Testnet 的
-/// openOrders 会返回 executedQty/origQty，但不返回 cumQty。账户恢复只需要这些字段，
-/// 因此不能复用 OrderResponse 强制解析无关字段。
-#[derive(Deserialize, Debug)]
-pub struct OpenOrderResponse {
-    #[serde(rename = "clientOrderId")]
-    pub client_order_id: String,
-    #[serde(rename = "executedQty", default, deserialize_with = "from_str_to_f64")]
-    pub executed_qty: f64,
-    #[serde(rename = "origQty", default, deserialize_with = "from_str_to_f64")]
-    pub orig_qty: f64,
-    #[serde(default, deserialize_with = "from_str_to_f64")]
-    pub price: f64,
-    #[serde(deserialize_with = "from_str_to_side")]
-    pub side: Side,
-    #[serde(deserialize_with = "from_str_to_status")]
-    pub status: Status,
-    #[serde(deserialize_with = "to_lowercase")]
-    pub symbol: String,
-    #[serde(
-        rename = "timeInForce",
-        default = "default_time_in_force",
-        deserialize_with = "from_str_to_tif"
-    )]
-    pub time_in_force: TimeInForce,
-    #[serde(
-        rename = "type",
-        default = "default_order_type",
-        deserialize_with = "from_str_to_type"
-    )]
-    pub ty: OrdType,
-    #[serde(rename = "updateTime", default)]
-    pub update_time: i64,
-}
-
-impl From<OpenOrderResponse> for OrderResponse {
-    fn from(order: OpenOrderResponse) -> Self {
-        Self {
-            client_order_id: order.client_order_id,
-            cum_qty: order.executed_qty,
-            executed_qty: order.executed_qty,
-            orig_qty: order.orig_qty,
-            price: order.price,
-            side: order.side,
-            status: order.status,
-            symbol: order.symbol,
-            time_in_force: order.time_in_force,
-            ty: order.ty,
-            update_time: order.update_time,
-        }
-    }
-}
-
 #[derive(Deserialize, Debug)]
 pub struct ErrorResponse {
     pub code: i64,
     pub msg: String,
+}
+
+/// `/fapi/v1/openOrders` 可能返回订单数组或 Binance 错误对象。
+/// OrderResponse 已对 openOrders 不提供的 cumQty 等非核心字段做兼容处理。
+#[derive(Deserialize, Debug)]\#[serde(untagged)]
+pub enum OpenOrdersResponse {
+    Ok(Vec<OrderResponse>),
+    Err(ErrorResponse),
 }
 
 /// 账户重新对账只需要 symbol、持仓方向、持仓数量和更新时间。
