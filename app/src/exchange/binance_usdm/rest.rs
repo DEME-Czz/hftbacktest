@@ -1,4 +1,8 @@
-use std::{fmt::Write, time::Duration};
+use std::{
+    fmt::Write,
+    sync::OnceLock,
+    time::Duration,
+};
 
 use chrono::Utc;
 use hftbacktest::types::{OrdType, Side, TimeInForce};
@@ -16,6 +20,14 @@ use super::{
 };
 
 const AMBIGUOUS_ORDER_RESPONSE_CODE: i64 = -1_000_001;
+const SYSTEM_THROTTLED_CODE: i64 = -1008;
+const CANCEL_THROTTLE_BACKOFF_MS: [u64; 3] = [250, 500, 1_000];
+
+static CANCEL_REQUEST_GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn cancel_request_gate() -> &'static tokio::sync::Mutex<()> {
+    CANCEL_REQUEST_GATE.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 fn side_str(side: Side) -> Result<&'static str, BinanceFuturesError> {
     match side {
@@ -353,36 +365,61 @@ impl BinanceFuturesClient {
         client_order_id: &str,
         symbol: &str,
     ) -> Result<OrderResponse, BinanceFuturesError> {
-        let body = format!("symbol={symbol}&origClientOrderId={client_order_id}");
-        let response: serde_json::Value = match self.delete("/fapi/v1/order", body).await {
-            Ok(response) => response,
-            Err(BinanceFuturesError::ReqError(error)) => {
-                warn!(
-                    %symbol,
-                    %client_order_id,
-                    ?error,
-                    "cancel request outcome is ambiguous; verifying order state"
-                );
-                return self
-                    .resolve_ambiguous_cancel(client_order_id, symbol, "cancel request failed")
-                    .await;
-            }
-            Err(error) => return Err(error),
-        };
+        // Binance -1008 is a definitive rejection caused by system-level protection. Retrying all
+        // outstanding cancels concurrently creates a positive-feedback request storm, so serialize
+        // cancel traffic and use bounded exponential backoff for this one transient code.
+        let _cancel_gate = cancel_request_gate().lock().await;
+        let mut throttle_attempt = 0usize;
 
-        match parse_order_response_value(response) {
-            Ok(order) => Ok(order),
-            Err(BinanceFuturesError::OrderError { code, .. })
-                if code == AMBIGUOUS_ORDER_RESPONSE_CODE =>
-            {
-                self.resolve_ambiguous_cancel(
-                    client_order_id,
-                    symbol,
-                    "cancel response schema was not recognized",
-                )
-                .await
+        loop {
+            let body = format!("symbol={symbol}&origClientOrderId={client_order_id}");
+            let response: serde_json::Value = match self.delete("/fapi/v1/order", body).await {
+                Ok(response) => response,
+                Err(BinanceFuturesError::ReqError(error)) => {
+                    warn!(
+                        %symbol,
+                        %client_order_id,
+                        ?error,
+                        "cancel request outcome is ambiguous; verifying order state"
+                    );
+                    return self
+                        .resolve_ambiguous_cancel(client_order_id, symbol, "cancel request failed")
+                        .await;
+                }
+                Err(error) => return Err(error),
+            };
+
+            match parse_order_response_value(response) {
+                Ok(order) => return Ok(order),
+                Err(BinanceFuturesError::OrderError { code, msg })
+                    if code == SYSTEM_THROTTLED_CODE
+                        && throttle_attempt < CANCEL_THROTTLE_BACKOFF_MS.len() =>
+                {
+                    let delay_ms = CANCEL_THROTTLE_BACKOFF_MS[throttle_attempt];
+                    throttle_attempt += 1;
+                    warn!(
+                        %symbol,
+                        %client_order_id,
+                        attempt = throttle_attempt,
+                        delay_ms,
+                        "Binance throttled cancel request; backing off before retry"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    let _ = msg;
+                }
+                Err(BinanceFuturesError::OrderError { code, .. })
+                    if code == AMBIGUOUS_ORDER_RESPONSE_CODE =>
+                {
+                    return self
+                        .resolve_ambiguous_cancel(
+                            client_order_id,
+                            symbol,
+                            "cancel response schema was not recognized",
+                        )
+                        .await;
+                }
+                Err(error) => return Err(error),
             }
-            Err(error) => Err(error),
         }
     }
 
@@ -583,6 +620,59 @@ mod tests {
     fn unknown_order_query_schema_defers_to_reconciliation() {
         let parsed = parse_query_order_value(serde_json::json!({"unexpected": true})).unwrap();
         assert!(parsed.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancel_retries_system_throttle_before_returning_an_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0_u8; 4096];
+                let _ = stream.read(&mut request).await.unwrap();
+                let body = if attempt < 2 {
+                    serde_json::json!({
+                        "code": -1008,
+                        "msg": "Request throttled by system-level protection. Reduce-only/close-position orders are exempt. Please try again."
+                    })
+                    .to_string()
+                } else {
+                    serde_json::json!({
+                        "clientOrderId": "client-id",
+                        "cumQty": "0",
+                        "executedQty": "0",
+                        "origQty": "0.001",
+                        "price": "100.0",
+                        "side": "BUY",
+                        "status": "CANCELED",
+                        "symbol": "BTCUSDT",
+                        "timeInForce": "GTC",
+                        "type": "LIMIT",
+                        "updateTime": 1234
+                    })
+                    .to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let client = super::BinanceFuturesClient::new(
+            &format!("http://{address}"),
+            "key",
+            "secret",
+        )
+        .unwrap();
+        let canceled = client.cancel_order("client-id", "BTCUSDT").await.unwrap();
+
+        assert_eq!(canceled.client_order_id, "client-id");
+        assert_eq!(canceled.status, hftbacktest::types::Status::Canceled);
+        server.await.unwrap();
     }
 
     #[tokio::test]
