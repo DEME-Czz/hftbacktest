@@ -26,17 +26,66 @@ Market data / account state
 
 ### GridStrategy
 
-`GridStrategy` is migrated from `master`'s `hftbacktest/examples/algo.rs` grid market-making strategy. The migrated version preserves the core behavior:
+`GridStrategy` is a double-sided grid market-making strategy. It keeps the strategy layer exchange-independent while the live runtime supplies normalized market depth, open orders and the current net position.
 
-- relative half spread
-- relative grid interval
-- multiple bid/ask grid levels
-- inventory-based skew
-- maximum position limit
-- cancel stale quotes
-- submit missing GTX limit quotes
+The current P0 market-making loop is:
 
-The old `gridtrading_live.rs` runtime was not migrated because it depended on the removed Iceoryx/LiveBot infrastructure.
+```text
+Mid Price
+   |
+   v
+Inventory Ratio = clamp(position / max_position, -1, 1)
+   |
+   v
+Reservation Price
+   |
+   v
+Bid / Ask Grid
+   |
+   v
+Requote hysteresis + minimum quote lifetime
+   |
+   v
+StrategyCommand
+   |
+   v
+RiskGate / LiveExecutor
+   |
+   v
+Exchange fill / position update
+   |
+   +-----------------------------> Inventory Ratio
+```
+
+The implementation deliberately uses `max_position` as the inventory normalization denominator. `order_qty` is only the base order size. Changing `order_qty` therefore does not accidentally multiply reservation-price skew.
+
+Inventory has three operating zones:
+
+- normal: `abs(position / max_position) < inventory_reduce_threshold`; both sides use the configured base quantity;
+- defensive: between `inventory_reduce_threshold` and `inventory_stop_threshold`; the risk-increasing side is reduced to half size while the inventory-reducing side remains at base size;
+- reduce: at or above `inventory_stop_threshold`; the risk-increasing side is removed and only inventory-reducing quotes remain.
+
+`max_position` remains a hard strategy boundary, and the live `RiskGate` remains the final hard exposure guard including same-side pending order exposure.
+
+### Requote controls
+
+Grid quotes are not canceled for every small market movement.
+
+- `requote_ticks` keeps an existing quote when its price remains close enough to the new target and its target quantity has not changed.
+- `min_quote_lifetime_ms` prevents normal strategy repricing from canceling a fresh order before it has had a minimum opportunity to rest in the book.
+- when a quote really must move, the strategy sends the cancel first and waits for the exchange terminal update before submitting the replacement. This avoids cancel+submit bursts and helps preserve a bounded open-order count.
+
+Safety cancellation and shutdown cancellation are outside the strategy layer and are not delayed by these quote-lifetime controls.
+
+### Account-driven quote refresh
+
+The live runtime tracks quote dirtiness separately from market-depth dirtiness. Depth changes, meaningful order updates and position changes can mark quotes dirty. A fill temporarily makes account state unready until a sufficiently current position update arrives; once the position is current and the safety gate allows trading, the service immediately reevaluates inventory-aware quotes instead of waiting only for a later depth batch.
+
+This closes the minimum live loop:
+
+```text
+Quote -> Fill -> Position -> Inventory -> Requote
+```
 
 ## Extension rule
 
@@ -58,14 +107,4 @@ BuiltinStrategy
 └── Grid
 ```
 
-Future candidates can be added independently, for example:
-
-```text
-BuiltinStrategy
-├── Grid
-├── Imbalance
-├── Microprice
-└── OrderFlow
-```
-
-The runtime/executor should not need strategy-specific branches beyond constructing the selected built-in strategy from configuration.
+Future fair-value and adverse-selection components should remain independent of transport concerns. Candidates include microprice, volatility-aware spread control and order-flow toxicity, but those are intentionally outside the current P0 stabilization scope.
