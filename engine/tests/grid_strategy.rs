@@ -218,6 +218,84 @@ fn stop_inventory_zone_disables_risk_increasing_side() {
 }
 
 #[test]
+fn stop_zone_reducing_quotes_cannot_cross_through_flat() {
+    let depth = depth();
+    let orders = HashMap::new();
+    let mut cfg = config();
+    cfg.max_position = 1.0;
+    cfg.order_qty = 0.5;
+    let mut strategy = GridStrategy::new(cfg).unwrap();
+
+    let long_commands = commands_for(&mut strategy, &depth, 0.85, &orders, 1);
+    let sell_qty: f64 = long_commands
+        .iter()
+        .filter_map(|command| match command {
+            StrategyCommand::Submit {
+                qty,
+                side: Side::Sell,
+                ..
+            } => Some(*qty),
+            _ => None,
+        })
+        .sum();
+    assert!(sell_qty <= 0.85 + f64::EPSILON);
+    assert!(!long_commands.iter().any(|command| matches!(
+        command,
+        StrategyCommand::Submit {
+            side: Side::Buy,
+            ..
+        }
+    )));
+
+    let short_commands = commands_for(&mut strategy, &depth, -0.85, &orders, 1);
+    let buy_qty: f64 = short_commands
+        .iter()
+        .filter_map(|command| match command {
+            StrategyCommand::Submit {
+                qty,
+                side: Side::Buy,
+                ..
+            } => Some(*qty),
+            _ => None,
+        })
+        .sum();
+    assert!(buy_qty <= 0.85 + f64::EPSILON);
+    assert!(!short_commands.iter().any(|command| matches!(
+        command,
+        StrategyCommand::Submit {
+            side: Side::Sell,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn stop_zone_cancels_risk_increasing_quote_without_waiting_for_min_lifetime() {
+    let depth = depth();
+    let mut cfg = config();
+    cfg.max_position = 1.0;
+    let mut strategy = GridStrategy::new(cfg).unwrap();
+    let mut order = Order::new(
+        900,
+        990,
+        0.1,
+        0.01,
+        Side::Buy,
+        OrdType::Limit,
+        TimeInForce::GTX,
+    );
+    order.status = Status::New;
+    order.local_timestamp = 1_000_000_000;
+    let orders = HashMap::from([(order.order_id, order)]);
+
+    let commands = commands_for(&mut strategy, &depth, 0.85, &orders, 1_100_000_000);
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        StrategyCommand::Cancel { order_id: 900 }
+    )));
+}
+
+#[test]
 fn requote_hysteresis_keeps_a_nearby_existing_quote() {
     let depth = depth();
     let mut strategy = GridStrategy::new(config()).unwrap();
