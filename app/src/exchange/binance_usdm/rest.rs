@@ -1,8 +1,4 @@
-use std::{
-    fmt::Write,
-    sync::OnceLock,
-    time::Duration,
-};
+use std::{fmt::Write, sync::OnceLock, time::Duration};
 
 use chrono::Utc;
 use hftbacktest::types::{OrdType, Side, TimeInForce};
@@ -662,12 +658,9 @@ mod tests {
             }
         });
 
-        let client = super::BinanceFuturesClient::new(
-            &format!("http://{address}"),
-            "key",
-            "secret",
-        )
-        .unwrap();
+        let client =
+            super::BinanceFuturesClient::new(&format!("http://{address}"), "key", "secret")
+                .unwrap();
         let canceled = client.cancel_order("client-id", "BTCUSDT").await.unwrap();
 
         assert_eq!(canceled.client_order_id, "client-id");
