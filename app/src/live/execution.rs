@@ -189,6 +189,10 @@ mod tests {
             skew: 0.00025,
             order_qty: 0.001,
             max_position: 0.003,
+            inventory_reduce_threshold: 0.60,
+            inventory_stop_threshold: 0.80,
+            requote_ticks: 5,
+            min_quote_lifetime_ms: 500,
         }))
         .unwrap();
         let mut runtime = LiveStrategyRuntime::new("btcusdt", 0.1, 0.001, strategy);
