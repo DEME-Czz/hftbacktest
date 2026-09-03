@@ -289,10 +289,11 @@ fn stop_zone_cancels_risk_increasing_quote_without_waiting_for_min_lifetime() {
     let orders = HashMap::from([(order.order_id, order)]);
 
     let commands = commands_for(&mut strategy, &depth, 0.85, &orders, 1_100_000_000);
-    assert!(commands.iter().any(|command| matches!(
-        command,
-        StrategyCommand::Cancel { order_id: 900 }
-    )));
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, StrategyCommand::Cancel { order_id: 900 }))
+    );
 }
 
 #[test]
