@@ -81,7 +81,8 @@ struct DesiredQuote {
 /// Inventory is normalized by `max_position`, not by order size. This keeps reservation-price skew
 /// stable when `order_qty` changes. Once inventory enters the defensive zone the strategy reduces
 /// risk-increasing quote size; once it enters the stop zone it removes that side entirely and keeps
-/// only quotes that can reduce inventory.
+/// only quotes that can reduce inventory. Stop-zone reducing quotes are capped by the actual
+/// position so a complete fill cannot cross through flat into a new opposite position.
 pub struct GridStrategy {
     config: GridConfig,
 }
@@ -160,6 +161,7 @@ impl GridStrategy {
         }
 
         let inventory_ratio = self.inventory_ratio(context.position);
+        let stop_zone = inventory_ratio.abs() >= self.config.inventory_stop_threshold;
         let reservation_price = mid_price * (1.0 - self.config.skew * inventory_ratio);
         if !reservation_price.is_finite() || reservation_price <= 0.0 {
             return Vec::new();
@@ -182,17 +184,30 @@ impl GridStrategy {
 
         if context.position < self.config.max_position && bid_qty > 0.0 && bid_price.is_finite() {
             let mut price = (bid_price / grid_interval).floor() * grid_interval;
+            let mut remaining_reduce_qty = if stop_zone && context.position < 0.0 {
+                -context.position
+            } else {
+                f64::INFINITY
+            };
             for _ in 0..self.config.grid_num {
+                let qty = bid_qty.min(remaining_reduce_qty);
+                if !qty.is_finite() && remaining_reduce_qty.is_finite() || qty <= 0.0 {
+                    break;
+                }
+                let qty = if qty.is_finite() { qty } else { bid_qty };
                 let price_tick = (price / tick_size).round() as i64;
                 if price_tick > 0 {
                     desired.push(DesiredQuote {
                         order_id: price_tick as u64,
                         price_tick,
                         price,
-                        qty: bid_qty,
+                        qty,
                         side: Side::Buy,
                         matched: false,
                     });
+                }
+                if remaining_reduce_qty.is_finite() {
+                    remaining_reduce_qty = (remaining_reduce_qty - qty).max(0.0);
                 }
                 price -= grid_interval;
             }
@@ -200,17 +215,30 @@ impl GridStrategy {
 
         if context.position > -self.config.max_position && ask_qty > 0.0 && ask_price.is_finite() {
             let mut price = (ask_price / grid_interval).ceil() * grid_interval;
+            let mut remaining_reduce_qty = if stop_zone && context.position > 0.0 {
+                context.position
+            } else {
+                f64::INFINITY
+            };
             for _ in 0..self.config.grid_num {
+                let qty = ask_qty.min(remaining_reduce_qty);
+                if !qty.is_finite() && remaining_reduce_qty.is_finite() || qty <= 0.0 {
+                    break;
+                }
+                let qty = if qty.is_finite() { qty } else { ask_qty };
                 let price_tick = (price / tick_size).round() as i64;
                 if price_tick > 0 {
                     desired.push(DesiredQuote {
                         order_id: price_tick as u64,
                         price_tick,
                         price,
-                        qty: ask_qty,
+                        qty,
                         side: Side::Sell,
                         matched: false,
                     });
+                }
+                if remaining_reduce_qty.is_finite() {
+                    remaining_reduce_qty = (remaining_reduce_qty - qty).max(0.0);
                 }
                 price += grid_interval;
             }
@@ -227,6 +255,8 @@ impl<MD: MarketDepth> Strategy<MD> for GridStrategy {
             return Vec::new();
         }
 
+        let emergency_inventory = self.inventory_ratio(context.position).abs()
+            >= self.config.inventory_stop_threshold;
         let mut commands = Vec::new();
         let mut canceled_ids = HashSet::new();
 
@@ -239,7 +269,9 @@ impl<MD: MarketDepth> Strategy<MD> for GridStrategy {
                 .map(|(index, _)| index);
 
             let Some(index) = nearest else {
-                if order.cancellable() && self.quote_old_enough(context.timestamp, order) {
+                if order.cancellable()
+                    && (emergency_inventory || self.quote_old_enough(context.timestamp, order))
+                {
                     commands.push(StrategyCommand::Cancel {
                         order_id: order.order_id,
                     });
@@ -253,7 +285,8 @@ impl<MD: MarketDepth> Strategy<MD> for GridStrategy {
             let qty_tolerance = order.qty.abs().max(quote.qty.abs()).max(1.0) * f64::EPSILON * 8.0;
             let qty_matches = (order.qty - quote.qty).abs() <= qty_tolerance;
             let keep_for_hysteresis = price_distance <= self.config.requote_ticks && qty_matches;
-            let old_enough = self.quote_old_enough(context.timestamp, order);
+            let old_enough =
+                emergency_inventory || self.quote_old_enough(context.timestamp, order);
 
             if keep_for_hysteresis || !old_enough || !order.cancellable() {
                 desired[index].matched = true;
