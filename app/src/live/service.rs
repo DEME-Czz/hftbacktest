@@ -173,7 +173,9 @@ impl QuoteCycleGate<'_> {
 
     fn command_allowed(&self, symbol: &str, command: &StrategyCommand) -> bool {
         match command {
-            StrategyCommand::Submit { side, .. } => !self.submission_blocks.is_blocked(symbol, *side),
+            StrategyCommand::Submit { side, .. } => {
+                !self.submission_blocks.is_blocked(symbol, *side)
+            }
             StrategyCommand::Modify { .. } | StrategyCommand::Cancel { .. } => true,
         }
     }
