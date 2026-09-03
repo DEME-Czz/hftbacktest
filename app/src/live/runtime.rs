@@ -22,6 +22,7 @@ pub struct LiveStrategyRuntime<S> {
     timestamp: i64,
     position_exch_timestamp: i64,
     depth_dirty: bool,
+    quote_dirty: bool,
 }
 
 impl<S> LiveStrategyRuntime<S>
@@ -39,6 +40,7 @@ where
             timestamp: 0,
             position_exch_timestamp: i64::MIN,
             depth_dirty: false,
+            quote_dirty: false,
         }
     }
 
@@ -54,15 +56,18 @@ where
                     self.depth
                         .update_bid_depth(event.px, event.qty, event.local_ts);
                     self.depth_dirty = true;
+                    self.quote_dirty = true;
                     false
                 } else if event.is(DEPTH_EVENT | SELL_EVENT) {
                     self.depth
                         .update_ask_depth(event.px, event.qty, event.local_ts);
                     self.depth_dirty = true;
+                    self.quote_dirty = true;
                     false
                 } else if event.is(DEPTH_CLEAR_EVENT) {
                     self.depth.clear_depth(Side::None, 0.0);
                     self.depth_dirty = true;
+                    self.quote_dirty = true;
                     false
                 } else if event.is(TRADE_EVENT) {
                     if self.last_trades.len() == 1024 {
@@ -75,10 +80,21 @@ where
                 }
             }
             LiveEvent::Order { symbol, order } if symbol == &self.symbol => {
+                let materially_changed = self.orders.get(&order.order_id).is_none_or(|existing| {
+                    existing.status != order.status
+                        || existing.side != order.side
+                        || existing.price_tick != order.price_tick
+                        || existing.qty != order.qty
+                        || existing.leaves_qty != order.leaves_qty
+                        || existing.exec_qty != order.exec_qty
+                });
                 if order.active() || order.pending() {
                     self.orders.insert(order.order_id, order.clone());
                 } else {
                     self.orders.remove(&order.order_id);
+                }
+                if materially_changed {
+                    self.quote_dirty = true;
                 }
                 true
             }
@@ -90,7 +106,10 @@ where
                 if !qty.is_finite() || *exch_ts < self.position_exch_timestamp {
                     return false;
                 }
-                self.position = *qty;
+                if self.position != *qty {
+                    self.position = *qty;
+                    self.quote_dirty = true;
+                }
                 self.position_exch_timestamp = *exch_ts;
                 true
             }
@@ -101,6 +120,16 @@ where
     /// Returns true once for each depth batch that changed this symbol.
     pub fn take_depth_dirty(&mut self) -> bool {
         std::mem::take(&mut self.depth_dirty)
+    }
+
+    /// Quote dirtiness is independent of depth dirtiness. Fills, order terminal updates and
+    /// position changes must also be able to trigger a fresh inventory-aware quote decision.
+    pub fn quote_dirty(&self) -> bool {
+        self.quote_dirty
+    }
+
+    pub fn take_quote_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.quote_dirty)
     }
 
     pub fn decide(&mut self) -> Vec<StrategyCommand> {
@@ -134,6 +163,7 @@ where
             order_type,
             time_in_force,
         );
+        order.local_timestamp = self.timestamp;
         order.req = Status::New;
         self.orders.insert(order_id, order.clone());
         order
@@ -198,7 +228,7 @@ impl Strategy<HashMapMarketDepth> for NoopStrategy {
 
 #[cfg(test)]
 mod tests {
-    use hftbacktest::types::LiveEvent;
+    use hftbacktest::types::{Event, LOCAL_BID_DEPTH_EVENT, LiveEvent, OrdType, Side, TimeInForce};
 
     use super::{LiveStrategyRuntime, NoopStrategy};
 
@@ -217,5 +247,49 @@ mod tests {
         });
 
         assert_eq!(runtime.position(), 2.0);
+    }
+
+    #[test]
+    fn position_change_marks_quotes_dirty() {
+        let mut runtime = LiveStrategyRuntime::new("btcusdt", 0.1, 0.001, NoopStrategy);
+        assert!(!runtime.quote_dirty());
+
+        runtime.apply(&LiveEvent::Position {
+            symbol: "btcusdt".to_string(),
+            qty: 0.5,
+            exch_ts: 100,
+        });
+
+        assert!(runtime.take_quote_dirty());
+        assert!(!runtime.quote_dirty());
+    }
+
+    #[test]
+    fn staged_order_records_latest_market_timestamp() {
+        let mut runtime = LiveStrategyRuntime::new("btcusdt", 0.1, 0.001, NoopStrategy);
+        runtime.apply(&LiveEvent::Feed {
+            symbol: "btcusdt".to_string(),
+            event: Event {
+                ev: LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 10,
+                local_ts: 123_000_000,
+                px: 100.0,
+                qty: 1.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+        });
+
+        let order = runtime.stage_submit(
+            1,
+            99.0,
+            0.001,
+            Side::Buy,
+            TimeInForce::GTX,
+            OrdType::Limit,
+        );
+
+        assert_eq!(order.local_timestamp, 123_000_000);
     }
 }
