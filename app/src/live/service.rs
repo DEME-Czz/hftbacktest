@@ -7,7 +7,10 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use hftbacktest::{strategy::BuiltinStrategy, types::LiveEvent};
+use hftbacktest::{
+    strategy::{BuiltinStrategy, StrategyCommand},
+    types::{LiveEvent, Side},
+};
 use tokio::{select, signal, sync::mpsc::unbounded_channel, time};
 use tracing::{error, info, trace, warn};
 
@@ -112,10 +115,52 @@ impl AccountReadiness {
     }
 }
 
+/// Directional venue-capacity guard learned from deterministic Binance rejections such as -2027.
+///
+/// A rejected side is blocked from new submissions, but cancellations and the opposite side remain
+/// available so the market maker can reduce inventory. A Buy block is released only after position
+/// decreases; a Sell block is released only after position increases. Those moves create capacity
+/// in the corresponding direction without guessing an exchange leverage bracket locally.
+#[derive(Default)]
+struct SubmissionBlocks {
+    buy: HashSet<String>,
+    sell: HashSet<String>,
+}
+
+impl SubmissionBlocks {
+    fn block(&mut self, symbol: &str, side: Side) -> bool {
+        match side {
+            Side::Buy => self.buy.insert(symbol.to_string()),
+            Side::Sell => self.sell.insert(symbol.to_string()),
+            Side::None | Side::Unsupported => false,
+        }
+    }
+
+    fn is_blocked(&self, symbol: &str, side: Side) -> bool {
+        match side {
+            Side::Buy => self.buy.contains(symbol),
+            Side::Sell => self.sell.contains(symbol),
+            Side::None | Side::Unsupported => false,
+        }
+    }
+
+    fn release_for_position_change(&mut self, symbol: &str, previous: f64, current: f64) -> bool {
+        let mut released = false;
+        if current < previous {
+            released |= self.buy.remove(symbol);
+        }
+        if current > previous {
+            released |= self.sell.remove(symbol);
+        }
+        released
+    }
+}
+
 struct QuoteCycleGate<'a> {
     mode: RunMode,
     account_readiness: &'a AccountReadiness,
     safety_state: &'a SafetyState,
+    submission_blocks: &'a SubmissionBlocks,
     now_ms: u64,
 }
 
@@ -124,6 +169,13 @@ impl QuoteCycleGate<'_> {
         !self.mode.allows_trading()
             || (self.account_readiness.contains(symbol)
                 && self.safety_state.can_submit(symbol, self.now_ms))
+    }
+
+    fn command_allowed(&self, symbol: &str, command: &StrategyCommand) -> bool {
+        match command {
+            StrategyCommand::Submit { side, .. } => !self.submission_blocks.is_blocked(symbol, *side),
+            StrategyCommand::Modify { .. } | StrategyCommand::Cancel { .. } => true,
+        }
     }
 }
 
@@ -146,7 +198,11 @@ fn execute_quote_cycle<C: LiveConnector>(
     }
 
     runtime.take_quote_dirty();
-    let commands = runtime.decide();
+    let commands = runtime
+        .decide()
+        .into_iter()
+        .filter(|command| gate.command_allowed(runtime.symbol(), command))
+        .collect::<Vec<_>>();
     if !commands.is_empty() {
         executor.execute(connector, tx, runtime, commands);
     }
@@ -237,6 +293,7 @@ impl<C: LiveConnector> LiveService<C> {
         }
 
         let mut account_readiness = AccountReadiness::default();
+        let mut submission_blocks = SubmissionBlocks::default();
         let mut safety_state = SafetyState::new(
             self.safety.stale_market_timeout_ms,
             self.runtimes.keys().cloned(),
@@ -272,11 +329,23 @@ impl<C: LiveConnector> LiveService<C> {
                         if let Some(symbol) = live_symbol(&live)
                             && let Some(runtime) = self.runtimes.get_mut(symbol)
                         {
+                            let previous_position = runtime.position();
                             let applied = runtime.apply(&live);
                             match &live {
                                 LiveEvent::Position { exch_ts, .. } => {
                                     account_readiness.observe_position(symbol, *exch_ts, applied);
                                     if applied {
+                                        if submission_blocks.release_for_position_change(
+                                            symbol,
+                                            previous_position,
+                                            runtime.position(),
+                                        ) {
+                                            info!(
+                                                %symbol,
+                                                position = runtime.position(),
+                                                "venue capacity side block released after position created new headroom"
+                                            );
+                                        }
                                         account_quote_symbol = Some(symbol.to_string());
                                     }
                                 }
@@ -298,6 +367,7 @@ impl<C: LiveConnector> LiveService<C> {
                                     mode: self.mode,
                                     account_readiness: &account_readiness,
                                     safety_state: &safety_state,
+                                    submission_blocks: &submission_blocks,
                                     now_ms: elapsed_ms(started_at),
                                 },
                                 &tx,
@@ -336,6 +406,7 @@ impl<C: LiveConnector> LiveService<C> {
                                     mode: self.mode,
                                     account_readiness: &account_readiness,
                                     safety_state: &safety_state,
+                                    submission_blocks: &submission_blocks,
                                     now_ms,
                                 },
                                 &tx,
@@ -382,6 +453,7 @@ impl<C: LiveConnector> LiveService<C> {
                                         mode: self.mode,
                                         account_readiness: &account_readiness,
                                         safety_state: &safety_state,
+                                        submission_blocks: &submission_blocks,
                                         now_ms: elapsed_ms(started_at),
                                     },
                                     &tx,
@@ -394,6 +466,27 @@ impl<C: LiveConnector> LiveService<C> {
                             &tx,
                             &mut cancellation_requests,
                         );
+                    }
+                    Some(PublishEvent::SubmissionCapacityRejected { symbol, side, code }) => {
+                        if submission_blocks.block(&symbol, side) {
+                            warn!(
+                                %symbol,
+                                ?side,
+                                code,
+                                "Binance position capacity rejected submit; blocking this quote side until position creates headroom"
+                            );
+                            // Existing orders on the same side also consume the capacity that just
+                            // caused the venue rejection. Cancel them, but keep the opposite side
+                            // alive so inventory can move away from the constrained direction.
+                            for order in self
+                                .connector
+                                .open_orders(&symbol)
+                                .into_iter()
+                                .filter(|order| order.side == side)
+                            {
+                                self.connector.cancel(symbol.clone(), order, tx.clone());
+                            }
+                        }
                     }
                     Some(PublishEvent::ExecutionUncertain { symbol }) => {
                         account_readiness.halt(&symbol);
@@ -565,7 +658,9 @@ fn live_symbol(event: &LiveEvent) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::AccountReadiness;
+    use hftbacktest::types::Side;
+
+    use super::{AccountReadiness, SubmissionBlocks};
 
     #[test]
     fn account_readiness_requires_position_and_snapshot() {
@@ -579,5 +674,24 @@ mod tests {
         assert!(!readiness.contains("btcusdt"));
         assert!(readiness.reconcile("btcusdt"));
         assert!(readiness.contains("btcusdt"));
+    }
+
+    #[test]
+    fn capacity_block_is_directional_and_releases_only_after_headroom_is_created() {
+        let mut blocks = SubmissionBlocks::default();
+
+        assert!(blocks.block("btcusdt", Side::Buy));
+        assert!(blocks.is_blocked("btcusdt", Side::Buy));
+        assert!(!blocks.is_blocked("btcusdt", Side::Sell));
+        assert!(!blocks.release_for_position_change("btcusdt", 1.0, 1.1));
+        assert!(blocks.is_blocked("btcusdt", Side::Buy));
+        assert!(blocks.release_for_position_change("btcusdt", 1.1, 1.0));
+        assert!(!blocks.is_blocked("btcusdt", Side::Buy));
+
+        assert!(blocks.block("btcusdt", Side::Sell));
+        assert!(!blocks.release_for_position_change("btcusdt", -1.0, -1.1));
+        assert!(blocks.is_blocked("btcusdt", Side::Sell));
+        assert!(blocks.release_for_position_change("btcusdt", -1.1, -1.0));
+        assert!(!blocks.is_blocked("btcusdt", Side::Sell));
     }
 }
