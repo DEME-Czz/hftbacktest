@@ -155,7 +155,10 @@ fn inventory_skew_is_normalized_by_max_position() {
         .fold(f64::NEG_INFINITY, f64::max);
 
     assert!(best_long_bid < best_flat_bid);
-    assert!(best_long_bid > 99.0, "50% inventory must not create an order-size-scaled skew");
+    assert!(
+        best_long_bid > 99.0,
+        "50% inventory must not create an order-size-scaled skew"
+    );
 }
 
 #[test]
@@ -271,8 +274,9 @@ fn minimum_quote_lifetime_blocks_early_cancel() {
     let orders = HashMap::from([(order.order_id, order)]);
 
     let commands = commands_for(&mut strategy, &depth, 0.0, &orders, 1_100_000_000);
-    assert!(!commands.iter().any(|command| matches!(
-        command,
-        StrategyCommand::Cancel { order_id: 900 }
-    )));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, StrategyCommand::Cancel { order_id: 900 }))
+    );
 }
