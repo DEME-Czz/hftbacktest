@@ -165,14 +165,14 @@ impl GridStrategy {
             return Vec::new();
         }
 
-        let bid_price = (reservation_price * (1.0 - self.config.relative_half_spread))
-            .min(depth.best_bid());
-        let ask_price = (reservation_price * (1.0 + self.config.relative_half_spread))
-            .max(depth.best_ask());
-        let grid_interval =
-            ((mid_price * self.config.relative_grid_interval / min_grid_step).round()
-                * min_grid_step)
-                .max(min_grid_step);
+        let bid_price =
+            (reservation_price * (1.0 - self.config.relative_half_spread)).min(depth.best_bid());
+        let ask_price =
+            (reservation_price * (1.0 + self.config.relative_half_spread)).max(depth.best_ask());
+        let grid_interval = ((mid_price * self.config.relative_grid_interval / min_grid_step)
+            .round()
+            * min_grid_step)
+            .max(min_grid_step);
         if !grid_interval.is_finite() || grid_interval <= 0.0 {
             return Vec::new();
         }
@@ -270,7 +270,8 @@ impl<MD: MarketDepth> Strategy<MD> for GridStrategy {
         }
 
         for quote in desired.into_iter().filter(|quote| !quote.matched) {
-            if canceled_ids.contains(&quote.order_id) || context.orders.contains_key(&quote.order_id)
+            if canceled_ids.contains(&quote.order_id)
+                || context.orders.contains_key(&quote.order_id)
             {
                 continue;
             }
