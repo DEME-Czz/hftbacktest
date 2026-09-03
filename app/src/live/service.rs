@@ -112,23 +112,32 @@ impl AccountReadiness {
     }
 }
 
+struct QuoteCycleGate<'a> {
+    mode: RunMode,
+    account_readiness: &'a AccountReadiness,
+    safety_state: &'a SafetyState,
+    now_ms: u64,
+}
+
+impl QuoteCycleGate<'_> {
+    fn can_execute(&self, symbol: &str) -> bool {
+        !self.mode.allows_trading()
+            || (self.account_readiness.contains(symbol)
+                && self.safety_state.can_submit(symbol, self.now_ms))
+    }
+}
+
 fn execute_quote_cycle<C: LiveConnector>(
     connector: &C,
     executor: &LiveExecutor,
-    mode: RunMode,
-    account_readiness: &AccountReadiness,
-    safety_state: &SafetyState,
-    now_ms: u64,
+    gate: QuoteCycleGate<'_>,
     tx: &tokio::sync::mpsc::UnboundedSender<PublishEvent>,
     runtime: &mut LiveStrategyRuntime<BuiltinStrategy>,
 ) {
     if !runtime.quote_dirty() {
         return;
     }
-    if mode.allows_trading()
-        && (!account_readiness.contains(runtime.symbol())
-            || !safety_state.can_submit(runtime.symbol(), now_ms))
-    {
+    if !gate.can_execute(runtime.symbol()) {
         trace!(
             symbol = runtime.symbol(),
             "execution waiting for safe market and account state"
@@ -285,10 +294,12 @@ impl<C: LiveConnector> LiveService<C> {
                             execute_quote_cycle(
                                 &self.connector,
                                 &self.executor,
-                                self.mode,
-                                &account_readiness,
-                                &safety_state,
-                                elapsed_ms(started_at),
+                                QuoteCycleGate {
+                                    mode: self.mode,
+                                    account_readiness: &account_readiness,
+                                    safety_state: &safety_state,
+                                    now_ms: elapsed_ms(started_at),
+                                },
                                 &tx,
                                 runtime,
                             );
@@ -321,10 +332,12 @@ impl<C: LiveConnector> LiveService<C> {
                             execute_quote_cycle(
                                 &self.connector,
                                 &self.executor,
-                                self.mode,
-                                &account_readiness,
-                                &safety_state,
-                                now_ms,
+                                QuoteCycleGate {
+                                    mode: self.mode,
+                                    account_readiness: &account_readiness,
+                                    safety_state: &safety_state,
+                                    now_ms,
+                                },
                                 &tx,
                                 runtime,
                             );
@@ -365,10 +378,12 @@ impl<C: LiveConnector> LiveService<C> {
                                 execute_quote_cycle(
                                     &self.connector,
                                     &self.executor,
-                                    self.mode,
-                                    &account_readiness,
-                                    &safety_state,
-                                    elapsed_ms(started_at),
+                                    QuoteCycleGate {
+                                        mode: self.mode,
+                                        account_readiness: &account_readiness,
+                                        safety_state: &safety_state,
+                                        now_ms: elapsed_ms(started_at),
+                                    },
                                     &tx,
                                     runtime,
                                 );
