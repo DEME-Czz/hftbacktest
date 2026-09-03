@@ -400,8 +400,8 @@ impl ExecutionVenue for BinanceFutures {
                                 code,
                             });
                         }
-                        if let Some(order) =
-                            lock_recover(&order_manager).update_submit_fail(&client_order_id, &error)
+                        if let Some(order) = lock_recover(&order_manager)
+                            .update_submit_fail(&client_order_id, &error)
                         {
                             let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
                                 symbol: symbol.clone(),
