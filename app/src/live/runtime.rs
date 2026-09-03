@@ -281,14 +281,8 @@ mod tests {
             },
         });
 
-        let order = runtime.stage_submit(
-            1,
-            99.0,
-            0.001,
-            Side::Buy,
-            TimeInForce::GTX,
-            OrdType::Limit,
-        );
+        let order =
+            runtime.stage_submit(1, 99.0, 0.001, Side::Buy, TimeInForce::GTX, OrdType::Limit);
 
         assert_eq!(order.local_timestamp, 123_000_000);
     }
