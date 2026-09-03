@@ -112,6 +112,37 @@ impl AccountReadiness {
     }
 }
 
+fn execute_quote_cycle<C: LiveConnector>(
+    connector: &C,
+    executor: &LiveExecutor,
+    mode: RunMode,
+    account_readiness: &AccountReadiness,
+    safety_state: &SafetyState,
+    now_ms: u64,
+    tx: &tokio::sync::mpsc::UnboundedSender<PublishEvent>,
+    runtime: &mut LiveStrategyRuntime<BuiltinStrategy>,
+) {
+    if !runtime.quote_dirty() {
+        return;
+    }
+    if mode.allows_trading()
+        && (!account_readiness.contains(runtime.symbol())
+            || !safety_state.can_submit(runtime.symbol(), now_ms))
+    {
+        trace!(
+            symbol = runtime.symbol(),
+            "execution waiting for safe market and account state"
+        );
+        return;
+    }
+
+    runtime.take_quote_dirty();
+    let commands = runtime.decide();
+    if !commands.is_empty() {
+        executor.execute(connector, tx, runtime, commands);
+    }
+}
+
 pub fn build_runtimes(configs: &[LiveStrategyConfig]) -> Result<StrategyRuntimes> {
     if configs.is_empty() {
         bail!("no [[strategies]] entries configured");
@@ -228,6 +259,7 @@ impl<C: LiveConnector> LiveService<C> {
                 event = rx.recv() => match event {
                     Some(PublishEvent::LiveEvent(live)) => {
                         trace!(?live, "runtime event");
+                        let mut account_quote_symbol = None;
                         if let Some(symbol) = live_symbol(&live)
                             && let Some(runtime) = self.runtimes.get_mut(symbol)
                         {
@@ -235,12 +267,31 @@ impl<C: LiveConnector> LiveService<C> {
                             match &live {
                                 LiveEvent::Position { exch_ts, .. } => {
                                     account_readiness.observe_position(symbol, *exch_ts, applied);
+                                    if applied {
+                                        account_quote_symbol = Some(symbol.to_string());
+                                    }
                                 }
                                 LiveEvent::Order { order, .. } if applied => {
                                     account_readiness.observe_order(symbol, order);
+                                    account_quote_symbol = Some(symbol.to_string());
                                 }
                                 _ => {}
                             }
+                        }
+
+                        if let Some(symbol) = account_quote_symbol
+                            && let Some(runtime) = self.runtimes.get_mut(&symbol)
+                        {
+                            execute_quote_cycle(
+                                &self.connector,
+                                &self.executor,
+                                self.mode,
+                                &account_readiness,
+                                &safety_state,
+                                elapsed_ms(started_at),
+                                &tx,
+                                runtime,
+                            );
                         }
                         if let LiveEvent::Error(error) = &live {
                             warn!(?error, "Binance live runtime error");
@@ -252,32 +303,31 @@ impl<C: LiveConnector> LiveService<C> {
                             .unwrap_or(u64::MAX);
                         let received_ms = now_ms.saturating_sub(batch_age_ms);
                         for runtime in self.runtimes.values_mut() {
-                            if !runtime.take_depth_dirty() {
-                                continue;
+                            if runtime.take_depth_dirty() {
+                                let has_open_orders = !self
+                                    .connector
+                                    .open_orders(runtime.symbol())
+                                    .is_empty();
+                                safety_state.on_market_batch(
+                                    runtime.symbol(),
+                                    received_ms,
+                                    has_open_orders,
+                                );
+                                if batch_age_ms >= self.safety.stale_market_timeout_ms {
+                                    safety_state.halt_symbol(runtime.symbol());
+                                }
                             }
-                            let has_open_orders = !self
-                                .connector
-                                .open_orders(runtime.symbol())
-                                .is_empty();
-                            safety_state.on_market_batch(
-                                runtime.symbol(),
-                                received_ms,
-                                has_open_orders,
+
+                            execute_quote_cycle(
+                                &self.connector,
+                                &self.executor,
+                                self.mode,
+                                &account_readiness,
+                                &safety_state,
+                                now_ms,
+                                &tx,
+                                runtime,
                             );
-                            if batch_age_ms >= self.safety.stale_market_timeout_ms {
-                                safety_state.halt_symbol(runtime.symbol());
-                            }
-                            if self.mode.allows_trading()
-                                && (!account_readiness.contains(runtime.symbol())
-                                    || !safety_state.can_submit(runtime.symbol(), now_ms))
-                            {
-                                trace!(symbol = runtime.symbol(), "execution waiting for safe market and account state");
-                                continue;
-                            }
-                            let commands = runtime.decide();
-                            if !commands.is_empty() {
-                                self.executor.execute(&self.connector, &tx, runtime, commands);
-                            }
                         }
                     }
                     Some(PublishEvent::BatchStart) => {}
@@ -307,10 +357,22 @@ impl<C: LiveConnector> LiveService<C> {
                         }
                     }
                     Some(PublishEvent::AccountSnapshotReady { symbol }) => {
-                        if self.runtimes.contains_key(&symbol)
-                            && account_readiness.reconcile(&symbol)
-                        {
+                        let reconciled = self.runtimes.contains_key(&symbol)
+                            && account_readiness.reconcile(&symbol);
+                        if reconciled {
                             info!(%symbol, "position and open-order state synchronized");
+                            if let Some(runtime) = self.runtimes.get_mut(&symbol) {
+                                execute_quote_cycle(
+                                    &self.connector,
+                                    &self.executor,
+                                    self.mode,
+                                    &account_readiness,
+                                    &safety_state,
+                                    elapsed_ms(started_at),
+                                    &tx,
+                                    runtime,
+                                );
+                            }
                         }
                         self.cancel_safety_orders(
                             &safety_state,
