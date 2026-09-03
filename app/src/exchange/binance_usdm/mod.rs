@@ -104,8 +104,17 @@ impl BinanceFuturesError {
     fn submission_is_ambiguous(&self) -> bool {
         match self {
             Self::ReqError(_) => true,
-            Self::OrderError { code, .. } => !matches!(*code, -5022 | -2019 | -1015 | -1008),
+            Self::OrderError { code, .. } => {
+                !matches!(*code, -5022 | -2027 | -2019 | -1015 | -1008)
+            }
             _ => false,
+        }
+    }
+
+    fn submission_capacity_rejection_code(&self) -> Option<i64> {
+        match self {
+            Self::OrderError { code: -2027, .. } => Some(-2027),
+            _ => None,
         }
     }
 }
@@ -380,13 +389,25 @@ impl ExecutionVenue for BinanceFutures {
                         let _ = tx.send(PublishEvent::ExecutionUncertain {
                             symbol: symbol.clone(),
                         });
-                    } else if let Some(order) =
-                        lock_recover(&order_manager).update_submit_fail(&client_order_id, &error)
-                    {
-                        let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                            symbol: symbol.clone(),
-                            order,
-                        }));
+                    } else {
+                        if let Some(code) = error.submission_capacity_rejection_code() {
+                            // Publish this before the local terminal order update. The service must
+                            // block the rejected side before that update marks quotes dirty and
+                            // could otherwise immediately resubmit the same impossible order.
+                            let _ = tx.send(PublishEvent::SubmissionCapacityRejected {
+                                symbol: symbol.clone(),
+                                side: order.side,
+                                code,
+                            });
+                        }
+                        if let Some(order) =
+                            lock_recover(&order_manager).update_submit_fail(&client_order_id, &error)
+                        {
+                            let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
+                                symbol: symbol.clone(),
+                                order,
+                            }));
+                        }
                     }
                     let _ = tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
                         ErrorKind::OrderError,
@@ -541,7 +562,7 @@ mod tests {
 
     #[test]
     fn known_exchange_rejections_are_definitive() {
-        for code in [-5022, -2019, -1015, -1008] {
+        for code in [-5022, -2027, -2019, -1015, -1008] {
             let error = super::BinanceFuturesError::OrderError {
                 code,
                 msg: "request rejected".to_string(),
@@ -635,6 +656,81 @@ mod tests {
             body
         );
         stream.write_all(response.as_bytes()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn position_cap_rejection_is_definitive_and_published_before_terminal_order() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = serde_json::json!({
+                "code": -2027,
+                "msg": "Exceeded the maximum allowable position at current leverage."
+            })
+            .to_string();
+            write_json_response(&mut stream, "400 Bad Request", &body).await;
+            request
+        });
+
+        let connector = BinanceFutures::new(BinanceConfig {
+            public_stream_url: "ws://127.0.0.1/".to_string(),
+            private_stream_url: "ws://127.0.0.1/{listen_key}".to_string(),
+            api_url: format!("http://{address}"),
+            order_prefix: "strategy-a".to_string(),
+            api_key: "key".to_string(),
+            secret: "secret".to_string(),
+            allow_test_endpoints: true,
+        })
+        .unwrap();
+        let mut order = Order::new(
+            41,
+            1000,
+            0.1,
+            1.0,
+            Side::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        );
+        order.req = Status::New;
+        let (tx, mut rx) = unbounded_channel();
+        connector.submit("btcusdt".to_string(), order, 0.001, tx);
+
+        let first = time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            first,
+            PublishEvent::SubmissionCapacityRejected {
+                ref symbol,
+                side: Side::Buy,
+                code: -2027,
+            } if symbol == "btcusdt"
+        ));
+
+        let mut terminal_seen = false;
+        let mut uncertain_seen = false;
+        time::timeout(Duration::from_secs(1), async {
+            while !terminal_seen {
+                match rx.recv().await {
+                    Some(PublishEvent::LiveEvent(LiveEvent::Order { order, .. })) => {
+                        terminal_seen = order.status == Status::Expired;
+                    }
+                    Some(PublishEvent::ExecutionUncertain { .. }) => uncertain_seen = true,
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(terminal_seen);
+        assert!(!uncertain_seen);
+        let request = server.await.unwrap();
+        assert!(request.starts_with("POST /fapi/v1/order "));
     }
 
     #[tokio::test]
