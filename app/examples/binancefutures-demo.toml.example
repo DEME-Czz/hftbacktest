@@ -61,7 +61,7 @@ max_open_orders = 4
 symbol = "BTCUSDT"
 
 # 策略类型。
-# 当前支持："grid"（网格做市策略）。
+# 当前支持："grid"（双边网格做市策略）。
 kind = "grid"
 
 # 最小价格变动单位（Tick Size）。
@@ -74,9 +74,8 @@ tick_size = 0.1
 # 该值必须与 Binance 当前合约规则保持一致。
 lot_size = 0.001
 
-# 相对于策略参考价格的单边目标价差比例。
-# 0.0005 = 0.05%，表示基础 Bid/Ask 报价分别位于参考价格两侧约 0.05%。
-# 数值越大，挂单距离市场越远，成交概率通常越低；数值越小，报价越激进。
+# 相对于策略保留价格（Reservation Price）的单边目标价差比例。
+# 0.0005 = 0.05%，表示基础 Bid/Ask 报价分别位于保留价格两侧约 0.05%。
 relative_half_spread = 0.0005
 
 # 相邻 Grid 档位之间的相对价格间隔。
@@ -84,25 +83,40 @@ relative_half_spread = 0.0005
 relative_grid_interval = 0.0005
 
 # 买卖两侧分别生成的 Grid 档位数量。
-# grid_num = 2 时，在没有被仓位或风控过滤的情况下，最多生成 2 个 Bid + 2 个 Ask。
+# grid_num = 2 时，在没有被库存或风控过滤的情况下，最多生成 2 个 Bid + 2 个 Ask。
 grid_num = 2
 
 # Grid 档位之间允许的最小绝对价格间隔，单位为报价资产价格。
 # 实际计算出的 Grid Step 不会小于该值。
-# BTCUSDT 配置 0.1 表示档位之间至少相差 0.1 USDT。
 min_grid_step = 0.1
 
 # 库存偏移（Inventory Skew）强度。
-# 当当前持仓不为 0 时，策略会根据持仓方向调整报价，降低继续增加同方向仓位的意愿，
-# 同时提高降低已有库存的意愿。
-# 数值越大，库存修正力度越强；配置为 0 表示不根据库存调整报价。
+# 当前实现按 position / max_position 归一化库存：
+#   inventory_ratio = clamp(position / max_position, -1, 1)
+# skew 表示达到最大仓位时，Reservation Price 相对 Mid Price 的最大偏移比例。
+# 不再使用 position / order_qty，因此调整单档订单大小不会放大库存偏移。
 skew = 0.00025
 
-# 每一个 Grid 订单的下单数量，单位为基础资产。
-# BTCUSDT 配置 0.001 表示每一档订单数量为 0.001 BTC。
+# 每一个 Grid 订单的基础下单数量，单位为基础资产。
 order_qty = 0.001
 
 # 策略自身允许的最大绝对持仓，单位为基础资产。
-# GridStrategy 不会继续生成使持仓超过该值的加仓订单。
 # 建议该值 <= risk.max_position，保证策略限制与最终 RiskGate 限制一致。
 max_position = 0.003
+
+# 库存进入防御区的阈值，以 max_position 的比例表示。
+# 例如 0.60 表示绝对持仓达到最大仓位的 60% 后，风险增加方向的挂单数量降为基础数量的一半。
+inventory_reduce_threshold = 0.60
+
+# 库存进入停止加仓区的阈值。
+# 例如 Long 仓达到最大仓位的 80% 后，不再生成新的 Buy Quote，只保留 Sell Quote 降低库存；
+# Short 仓方向相反。
+inventory_stop_threshold = 0.80
+
+# Requote 价格滞回阈值，单位为 tick。
+# 当前挂单与新理论档位价格差不超过 5 tick 且数量目标未变化时，保留原订单，避免无意义撤挂。
+requote_ticks = 5
+
+# 普通策略 Requote 的最小挂单寿命，单位毫秒。
+# 新订单未存活到该时间前，不会因为普通价格漂移被撤掉；Safety Halt / Shutdown 不受此限制。
+min_quote_lifetime_ms = 500
