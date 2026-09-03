@@ -1,4 +1,4 @@
-use hftbacktest::types::Order;
+use hftbacktest::types::{Order, Side};
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,6 +44,15 @@ pub enum PublishEvent {
     /// may authorize execution.
     AccountSnapshotReady {
         symbol: String,
+    },
+    /// Binance definitively rejected a submission because the requested side would exceed an
+    /// exchange-side position/capacity constraint. The order was not created, so this must not be
+    /// treated as an uncertain submission. The live service may temporarily block this side while
+    /// allowing the opposite side to keep reducing inventory.
+    SubmissionCapacityRejected {
+        symbol: String,
+        side: Side,
+        code: i64,
     },
     /// The venue may have accepted a submit whose response could not be confirmed. Execution for
     /// the symbol must remain latched off until a clean restart/recovery.
