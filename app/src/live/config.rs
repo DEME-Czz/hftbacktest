@@ -32,6 +32,22 @@ fn default_shutdown_cancel_timeout_ms() -> u64 {
     10_000
 }
 
+fn default_inventory_reduce_threshold() -> f64 {
+    0.60
+}
+
+fn default_inventory_stop_threshold() -> f64 {
+    0.80
+}
+
+fn default_requote_ticks() -> u64 {
+    5
+}
+
+fn default_min_quote_lifetime_ms() -> u64 {
+    500
+}
+
 impl Default for SafetyConfig {
     fn default() -> Self {
         Self {
@@ -77,6 +93,14 @@ pub enum StrategyConfig {
         skew: f64,
         order_qty: f64,
         max_position: f64,
+        #[serde(default = "default_inventory_reduce_threshold")]
+        inventory_reduce_threshold: f64,
+        #[serde(default = "default_inventory_stop_threshold")]
+        inventory_stop_threshold: f64,
+        #[serde(default = "default_requote_ticks")]
+        requote_ticks: u64,
+        #[serde(default = "default_min_quote_lifetime_ms")]
+        min_quote_lifetime_ms: u64,
     },
 }
 
@@ -91,6 +115,10 @@ impl LiveStrategyConfig {
                 skew,
                 order_qty,
                 max_position,
+                inventory_reduce_threshold,
+                inventory_stop_threshold,
+                requote_ticks,
+                min_quote_lifetime_ms,
             } => BuiltinStrategyConfig::Grid(GridConfig {
                 relative_half_spread: *relative_half_spread,
                 relative_grid_interval: *relative_grid_interval,
@@ -99,6 +127,10 @@ impl LiveStrategyConfig {
                 skew: *skew,
                 order_qty: *order_qty,
                 max_position: *max_position,
+                inventory_reduce_threshold: *inventory_reduce_threshold,
+                inventory_stop_threshold: *inventory_stop_threshold,
+                requote_ticks: *requote_ticks,
+                min_quote_lifetime_ms: *min_quote_lifetime_ms,
             }),
         };
         BuiltinStrategy::from_config(config)
