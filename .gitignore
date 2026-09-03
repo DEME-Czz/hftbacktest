@@ -1,14 +1,18 @@
 dist
 build
+.DS_Store
 *.egg-info
 *.npz
 __pycache__
 venv
 docs/_build
-**/Cargo.lock
+# Cargo.lock is intentionally tracked because this workspace ships binaries.
 **/target
 **/tmp_*
 **/*.so
 
 # Local exchange credentials; copy from the tracked .example template.
-connector/examples/binancefutures-demo.toml
+/app/examples/local.toml
+
+# Runtime market-data captures can be large and may contain proprietary data.
+/data/

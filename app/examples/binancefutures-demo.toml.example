@@ -1,0 +1,122 @@
+# Binance USD-M Futures 测试网配置
+#
+# 本地运行前建议复制为 app/examples/local.toml。
+# local.toml 中如果填写了 API Key / Secret，请勿提交到 Git。
+
+# 公共行情 WebSocket 地址。
+# 用于接收深度（Depth）和成交（Trade）数据，不需要 API Key。
+public_stream_url = "wss://demo-fstream.binance.com/ws"
+
+# 私有用户数据 WebSocket 地址模板。
+# 程序启动后会使用 Binance 返回的 listenKey 替换 {listen_key}。
+# 配置 API 凭证后，用于接收订单状态、账户和持仓更新。
+private_stream_url = "wss://demo-fstream.binance.com/ws/{listen_key}"
+
+# Binance USD-M Futures 测试网 REST API 地址。
+# 用于获取深度快照、同步持仓、下单、撤单以及维护 listenKey。
+api_url = "https://demo-fapi.binance.com"
+
+# Binance clientOrderId 的前缀。
+# 建议保持简短且具有辨识度，便于区分本策略产生的订单、手工订单和其他程序订单。
+order_prefix = "hfttest"
+
+# Binance Futures 测试网 API 凭证。
+# 仅运行行情和策略 dry-run 时可以留空。
+# 使用 --execute 真正向测试网发送订单时，api_key 和 secret 都必须填写。
+api_key = ""
+secret = ""
+
+# -----------------------------------------------------------------------------
+# 全局实盘风控
+# -----------------------------------------------------------------------------
+# 所有 StrategyCommand 在发送到 Binance 前都必须通过这一层检查。
+# 策略自身的限制不能替代这里的全局风控。
+[risk]
+
+# 单笔订单允许的最大数量，单位为基础资产。
+# 例如 BTCUSDT 配置 0.001，表示单笔订单最多允许 0.001 BTC。
+max_order_qty = 0.001
+
+# 单笔订单允许的最大名义价值，单位为报价资产。
+# 对 BTCUSDT 来说，名义价值约等于：订单价格 × BTC 数量，单位为 USDT。
+max_order_notional = 100.0
+
+# 单个交易标的允许的最大绝对持仓，单位为基础资产。
+# 风控还会把同方向未成交活动订单计算进去，防止多个 Grid 挂单同时成交后突破持仓上限。
+max_position = 0.003
+
+# 单个交易标的允许同时存在的最大活动订单数量。
+max_open_orders = 4
+
+# -----------------------------------------------------------------------------
+# 内置策略配置
+# -----------------------------------------------------------------------------
+# 每个 [[strategies]] 配置块代表一个交易标的上的一个策略实例。
+# 如需增加 ETHUSDT 等标的，继续追加新的 [[strategies]] 配置块即可。
+# 主 Runtime 会自动订阅这里声明的全部 symbol，不需要再通过命令行传 symbol。
+[[strategies]]
+
+# Binance 合约交易对。
+# Runtime 内部会根据行情订阅要求进行 symbol 标准化处理。
+symbol = "BTCUSDT"
+
+# 策略类型。
+# 当前支持："grid"（双边网格做市策略）。
+kind = "grid"
+
+# 最小价格变动单位（Tick Size）。
+# BTCUSDT 示例为 0.1，表示策略生成的订单价格必须按照 0.1 USDT 对齐。
+# 该值必须与 Binance 当前合约规则保持一致。
+tick_size = 0.1
+
+# 最小下单数量步长（Lot Size / Step Size）。
+# BTCUSDT 示例为 0.001，表示订单数量按照 0.001 BTC 对齐。
+# 该值必须与 Binance 当前合约规则保持一致。
+lot_size = 0.001
+
+# 相对于策略保留价格（Reservation Price）的单边目标价差比例。
+# 0.0005 = 0.05%，表示基础 Bid/Ask 报价分别位于保留价格两侧约 0.05%。
+relative_half_spread = 0.0005
+
+# 相邻 Grid 档位之间的相对价格间隔。
+# 0.0005 = 约 0.05%，最终价格还会按照 tick_size 对齐。
+relative_grid_interval = 0.0005
+
+# 买卖两侧分别生成的 Grid 档位数量。
+# grid_num = 2 时，在没有被库存或风控过滤的情况下，最多生成 2 个 Bid + 2 个 Ask。
+grid_num = 2
+
+# Grid 档位之间允许的最小绝对价格间隔，单位为报价资产价格。
+# 实际计算出的 Grid Step 不会小于该值。
+min_grid_step = 0.1
+
+# 库存偏移（Inventory Skew）强度。
+# 当前实现按 position / max_position 归一化库存：
+#   inventory_ratio = clamp(position / max_position, -1, 1)
+# skew 表示达到最大仓位时，Reservation Price 相对 Mid Price 的最大偏移比例。
+# 不再使用 position / order_qty，因此调整单档订单大小不会放大库存偏移。
+skew = 0.00025
+
+# 每一个 Grid 订单的基础下单数量，单位为基础资产。
+order_qty = 0.001
+
+# 策略自身允许的最大绝对持仓，单位为基础资产。
+# 建议该值 <= risk.max_position，保证策略限制与最终 RiskGate 限制一致。
+max_position = 0.003
+
+# 库存进入防御区的阈值，以 max_position 的比例表示。
+# 例如 0.60 表示绝对持仓达到最大仓位的 60% 后，风险增加方向的挂单数量降为基础数量的一半。
+inventory_reduce_threshold = 0.60
+
+# 库存进入停止加仓区的阈值。
+# 例如 Long 仓达到最大仓位的 80% 后，不再生成新的 Buy Quote，只保留 Sell Quote 降低库存；
+# Short 仓方向相反。
+inventory_stop_threshold = 0.80
+
+# Requote 价格滞回阈值，单位为 tick。
+# 当前挂单与新理论档位价格差不超过 5 tick 且数量目标未变化时，保留原订单，避免无意义撤挂。
+requote_ticks = 5
+
+# 普通策略 Requote 的最小挂单寿命，单位毫秒。
+# 新订单未存活到该时间前，不会因为普通价格漂移被撤掉；Safety Halt / Shutdown 不受此限制。
+min_quote_lifetime_ms = 500

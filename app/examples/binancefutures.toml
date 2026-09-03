@@ -1,0 +1,31 @@
+# Binance USD-M Futures production endpoints.
+public_stream_url = "wss://fstream.binance.com/public/stream"
+private_stream_url = "wss://fstream.binance.com/private/ws/{listen_key}"
+api_url = "https://fapi.binance.com"
+
+order_prefix = "hft"
+api_key = ""
+secret = ""
+
+[risk]
+max_order_qty = 0.001
+max_order_notional = 100.0
+max_position = 0.003
+max_open_orders = 4
+
+[[strategies]]
+symbol = "BTCUSDT"
+kind = "grid"
+tick_size = 0.1
+lot_size = 0.001
+relative_half_spread = 0.0005
+relative_grid_interval = 0.0005
+grid_num = 2
+min_grid_step = 0.1
+skew = 0.00025
+order_qty = 0.001
+max_position = 0.003
+inventory_reduce_threshold = 0.60
+inventory_stop_threshold = 0.80
+requote_ticks = 5
+min_quote_lifetime_ms = 500

@@ -1,0 +1,27 @@
+[package]
+name = "hft-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+default-run = "hft-app"
+
+[dependencies]
+hftbacktest = { path = "../engine", default-features = false, features = ["backtest"] }
+tracing = "0.1.43"
+anyhow = "1.0.100"
+thiserror = "2.0.17"
+bincode = "2.0.1"
+chrono = "0.4.42"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+tokio = { version = "1.48.0", features = ["full"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+futures-util = "0.3.31"
+sha2 = "0.10.9"
+hmac = "0.12.1"
+toml = "0.9.8"
+tracing-subscriber = "0.3.22"
+clap = { version = "4.5.53", features = ["derive"] }
+hashbrown = "0.16.1"
+rand = "0.9.2"
