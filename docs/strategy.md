@@ -65,6 +65,8 @@ Inventory has three operating zones:
 - defensive: between `inventory_reduce_threshold` and `inventory_stop_threshold`; the risk-increasing side is reduced to half size while the inventory-reducing side remains at base size;
 - reduce: at or above `inventory_stop_threshold`; the risk-increasing side is removed and only inventory-reducing quotes remain.
 
+In the reduce zone, the total quantity of the inventory-reducing ladder is capped by the current absolute position. Therefore a complete fill of every reducing quote cannot cross through flat and accidentally create a new position in the opposite direction. Risk-increasing stale quotes are canceled immediately in this zone rather than waiting for the normal minimum quote lifetime.
+
 `max_position` remains a hard strategy boundary, and the live `RiskGate` remains the final hard exposure guard including same-side pending order exposure.
 
 ### Requote controls
