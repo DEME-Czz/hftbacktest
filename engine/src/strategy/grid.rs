@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::{
     depth::{INVALID_MAX, INVALID_MIN, MarketDepth},
     strategy::{MarketContext, Strategy, StrategyCommand},
@@ -190,11 +188,14 @@ impl GridStrategy {
                 f64::INFINITY
             };
             for _ in 0..self.config.grid_num {
-                let qty = bid_qty.min(remaining_reduce_qty);
-                if !qty.is_finite() && remaining_reduce_qty.is_finite() || qty <= 0.0 {
+                let qty = if remaining_reduce_qty.is_finite() {
+                    bid_qty.min(remaining_reduce_qty)
+                } else {
+                    bid_qty
+                };
+                if qty <= 0.0 {
                     break;
                 }
-                let qty = if qty.is_finite() { qty } else { bid_qty };
                 let price_tick = (price / tick_size).round() as i64;
                 if price_tick > 0 {
                     desired.push(DesiredQuote {
@@ -221,11 +222,14 @@ impl GridStrategy {
                 f64::INFINITY
             };
             for _ in 0..self.config.grid_num {
-                let qty = ask_qty.min(remaining_reduce_qty);
-                if !qty.is_finite() && remaining_reduce_qty.is_finite() || qty <= 0.0 {
+                let qty = if remaining_reduce_qty.is_finite() {
+                    ask_qty.min(remaining_reduce_qty)
+                } else {
+                    ask_qty
+                };
+                if qty <= 0.0 {
                     break;
                 }
-                let qty = if qty.is_finite() { qty } else { ask_qty };
                 let price_tick = (price / tick_size).round() as i64;
                 if price_tick > 0 {
                     desired.push(DesiredQuote {
@@ -255,10 +259,9 @@ impl<MD: MarketDepth> Strategy<MD> for GridStrategy {
             return Vec::new();
         }
 
-        let emergency_inventory = self.inventory_ratio(context.position).abs()
-            >= self.config.inventory_stop_threshold;
+        let emergency_inventory =
+            self.inventory_ratio(context.position).abs() >= self.config.inventory_stop_threshold;
         let mut commands = Vec::new();
-        let mut canceled_ids = HashSet::new();
 
         for order in context.orders.values() {
             let nearest = desired
@@ -275,7 +278,6 @@ impl<MD: MarketDepth> Strategy<MD> for GridStrategy {
                     commands.push(StrategyCommand::Cancel {
                         order_id: order.order_id,
                     });
-                    canceled_ids.insert(order.order_id);
                 }
                 continue;
             };
@@ -285,8 +287,7 @@ impl<MD: MarketDepth> Strategy<MD> for GridStrategy {
             let qty_tolerance = order.qty.abs().max(quote.qty.abs()).max(1.0) * f64::EPSILON * 8.0;
             let qty_matches = (order.qty - quote.qty).abs() <= qty_tolerance;
             let keep_for_hysteresis = price_distance <= self.config.requote_ticks && qty_matches;
-            let old_enough =
-                emergency_inventory || self.quote_old_enough(context.timestamp, order);
+            let old_enough = emergency_inventory || self.quote_old_enough(context.timestamp, order);
 
             if keep_for_hysteresis || !old_enough || !order.cancellable() {
                 desired[index].matched = true;
@@ -298,14 +299,11 @@ impl<MD: MarketDepth> Strategy<MD> for GridStrategy {
             commands.push(StrategyCommand::Cancel {
                 order_id: order.order_id,
             });
-            canceled_ids.insert(order.order_id);
             desired[index].matched = true;
         }
 
         for quote in desired.into_iter().filter(|quote| !quote.matched) {
-            if canceled_ids.contains(&quote.order_id)
-                || context.orders.contains_key(&quote.order_id)
-            {
+            if context.orders.contains_key(&quote.order_id) {
                 continue;
             }
             commands.push(StrategyCommand::Submit {
