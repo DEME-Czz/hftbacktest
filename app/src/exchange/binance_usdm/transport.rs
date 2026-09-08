@@ -21,10 +21,12 @@ pub async fn websocket_io<T>(
 ) -> Result<T, tungstenite::Error> {
     tokio::time::timeout(Duration::from_secs(10), operation)
         .await
-        .map_err(|_| tungstenite::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "WebSocket operation timed out",
-        )))?
+        .map_err(|_| {
+            tungstenite::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "WebSocket operation timed out",
+            ))
+        })?
 }
 
 pub async fn connect_websocket(
@@ -196,10 +198,9 @@ where
 mod tests {
     #[tokio::test(start_paused = true)]
     async fn stalled_websocket_operation_times_out() {
-        let result = super::websocket_io(std::future::pending::<
-            Result<(), super::tungstenite::Error>,
-        >())
-        .await;
+        let result =
+            super::websocket_io(std::future::pending::<Result<(), super::tungstenite::Error>>())
+                .await;
         assert!(matches!(
             result,
             Err(super::tungstenite::Error::Io(error))

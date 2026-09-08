@@ -346,10 +346,8 @@ impl MarketDataStream {
             if subscribed.insert(symbol.clone()) {
                 let id = generate_random_id(16);
                 self.depth_progress.insert(symbol.clone(), Instant::now());
-                websocket_io(
-                    write.send(Message::Text(subscription_request(&symbol, &id).into())),
-                )
-                .await?;
+                websocket_io(write.send(Message::Text(subscription_request(&symbol, &id).into())))
+                    .await?;
             }
         }
 
