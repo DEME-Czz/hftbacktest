@@ -303,6 +303,8 @@ impl<C: LiveConnector> LiveService<C> {
         let safety_tick_ms = (self.safety.stale_market_timeout_ms / 4).clamp(25, 250);
         let mut safety_interval = time::interval(Duration::from_millis(safety_tick_ms));
         safety_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        let mut health_interval = time::interval(Duration::from_secs(30));
+        health_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         let mut cancellation_requests = HashMap::new();
         if kill_switch_is_active(self.safety.kill_switch_file.as_deref()) {
             safety_state.trip_kill_switch();
@@ -502,6 +504,21 @@ impl<C: LiveConnector> LiveService<C> {
                     }
                     None => break,
                 },
+                _ = health_interval.tick() => {
+                    let now_ms = elapsed_ms(started_at);
+                    for symbol in self.runtimes.keys() {
+                        info!(%symbol,
+                            execute = self.mode.allows_trading(),
+                            market_ready = safety_state.can_submit(symbol, now_ms),
+                            account_ready = account_readiness.contains(symbol),
+                            execution_uncertain = account_readiness.halted.contains(symbol),
+                            kill_switch = safety_state.kill_latched(),
+                            buy_capacity_blocked = submission_blocks.is_blocked(symbol, Side::Buy),
+                            sell_capacity_blocked = submission_blocks.is_blocked(symbol, Side::Sell),
+                            open_orders = self.connector.open_orders(symbol).len(),
+                            "live runtime health");
+                    }
+                }
                 _ = safety_interval.tick() => {
                     let now_ms = elapsed_ms(started_at);
                     safety_state.on_tick(now_ms);

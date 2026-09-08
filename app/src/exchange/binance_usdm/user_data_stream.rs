@@ -21,7 +21,7 @@ use crate::{
         orders::SharedOrderManager,
         protocol::stream::{EventStream, Stream},
         rest::BinanceFuturesClient,
-        transport::connect_websocket,
+        transport::{connect_websocket, websocket_io},
     },
     ports::{PublishEvent, TradingInstrument},
 };
@@ -176,10 +176,12 @@ impl UserDataStream {
                         UserStreamFrame::Text(text.to_string(), Instant::now()),
                         false,
                     ),
-                    Some(Ok(Message::Ping(data))) => match write.send(Message::Pong(data)).await {
-                        Ok(()) => (UserStreamFrame::Activity(Instant::now()), false),
-                        Err(error) => (UserStreamFrame::Terminal(error.into()), true),
-                    },
+                    Some(Ok(Message::Ping(data))) => {
+                        match websocket_io(write.send(Message::Pong(data))).await {
+                            Ok(()) => (UserStreamFrame::Activity(Instant::now()), false),
+                            Err(error) => (UserStreamFrame::Terminal(error.into()), true),
+                        }
+                    }
                     Some(Ok(Message::Pong(_)))
                     | Some(Ok(Message::Binary(_)))
                     | Some(Ok(Message::Frame(_))) => {
@@ -226,12 +228,13 @@ impl UserDataStream {
             select! {
                 _ = interval.tick() => {
                     lock_recover(&self.order_manager).gc();
-                    let client_ = self.client.clone();
-                    tokio::spawn(async move {
-                        if let Err(error) = client_.keepalive_user_data_stream().await {
-                            error!(?error, "failed to keep user data stream alive");
-                        }
-                    });
+                    // A failed keepalive makes the listen key's lifetime uncertain. Returning the
+                    // error lets the outer retry loop create a new key and reconcile account state
+                    // before execution is enabled again.
+                    self.client.keepalive_user_data_stream().await.map_err(|error| {
+                        error!(?error, "failed to keep user data stream alive; reconnecting");
+                        error
+                    })?;
                 }
                 _ = activity_checker.tick() => {
                     if last_activity.elapsed() > Duration::from_secs(300) {

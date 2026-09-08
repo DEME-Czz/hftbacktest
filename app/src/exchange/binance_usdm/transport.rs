@@ -14,7 +14,26 @@ use tokio_tungstenite::{
     tungstenite::{self, client::IntoClientRequest, handshake::client::Response},
 };
 
+/// Bound DNS, TCP, proxy CONNECT, TLS, handshake and writes. A timer in a caller's
+/// select loop cannot interrupt an await inside one of that loop's selected branches.
+pub async fn websocket_io<T>(
+    operation: impl Future<Output = Result<T, tungstenite::Error>>,
+) -> Result<T, tungstenite::Error> {
+    tokio::time::timeout(Duration::from_secs(10), operation)
+        .await
+        .map_err(|_| tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "WebSocket operation timed out",
+        )))?
+}
+
 pub async fn connect_websocket(
+    request: impl IntoClientRequest,
+) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, Response), tungstenite::Error> {
+    websocket_io(connect_websocket_inner(request)).await
+}
+
+async fn connect_websocket_inner(
     request: impl IntoClientRequest,
 ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, Response), tungstenite::Error> {
     let request = request.into_client_request()?;
@@ -170,5 +189,21 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test(start_paused = true)]
+    async fn stalled_websocket_operation_times_out() {
+        let result = super::websocket_io(std::future::pending::<
+            Result<(), super::tungstenite::Error>,
+        >())
+        .await;
+        assert!(matches!(
+            result,
+            Err(super::tungstenite::Error::Io(error))
+                if error.kind() == std::io::ErrorKind::TimedOut
+        ));
     }
 }

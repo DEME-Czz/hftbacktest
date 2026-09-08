@@ -9,6 +9,10 @@ Live 当前只支持 Binance USD-M Futures，Market WS、User WS、Runtime 与 S
 - API Key/Secret 必须成对配置，远端地址必须使用 WSS/HTTPS。
 - 每个 symbol 收到初始 Position 之前禁止下单。
 - 私有账户流断开会清空全部 symbol 的就绪状态；重新对账前继续 fail closed。
+- 私有流 listen-key 保活失败会立即重建连接与 listen key，并重新执行账户对账；不会仅记录错误后继续假运行。
+- Market WS 的连接、代理 CONNECT、TLS 握手和写操作均有 10 秒上限，避免单个异步操作永久挂起。
+- 行情健康以每个 symbol 成功发布的连续 L2 depth 为准；Ping/Pong 或订阅响应不能冒充有效行情。任一 symbol 30 秒无深度进展会重连并重建订单簿。
+- 每 30 秒输出一条 `live runtime health`，明确记录行情、账户、kill switch、容量限制及活动订单状态。
 - 风控计算当前仓位、同方向活动订单暴露、单笔数量/名义价值和活动订单数。
 - Ctrl+C 只撤销本进程已跟踪的活动订单，并等待确认；两秒超时会明确告警。
 

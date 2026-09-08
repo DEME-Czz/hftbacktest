@@ -26,10 +26,12 @@ use crate::{
             stream::{EventStream, Stream},
         },
         rest::BinanceFuturesClient,
-        transport::connect_websocket,
+        transport::{connect_websocket, websocket_io},
     },
     ports::PublishEvent,
 };
+
+const DEPTH_PROGRESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 const MAX_PENDING_DEPTH_MESSAGES: usize = 4_096;
 type SnapshotResult = Result<rest::Depth, BinanceFuturesError>;
@@ -41,6 +43,8 @@ pub struct MarketDataStream {
     symbol_rx: Receiver<String>,
     pending_depth_messages: HashMap<String, Vec<stream::Depth>>,
     prev_u: HashMap<String, i64>,
+    // Only successfully published depth advances business health, never socket heartbeats.
+    depth_progress: HashMap<String, Instant>,
     rest_tx: UnboundedSender<(String, SnapshotResult)>,
     rest_rx: UnboundedReceiver<(String, SnapshotResult)>,
 }
@@ -60,6 +64,7 @@ impl MarketDataStream {
             symbol_rx,
             pending_depth_messages: Default::default(),
             prev_u: Default::default(),
+            depth_progress: Default::default(),
             rest_tx,
             rest_rx,
         }
@@ -97,6 +102,7 @@ impl MarketDataStream {
     fn reset_connection_state(&mut self) {
         self.pending_depth_messages.clear();
         self.prev_u.clear();
+        self.depth_progress.clear();
         let (rest_tx, rest_rx) = unbounded_channel();
         self.rest_tx = rest_tx;
         self.rest_rx = rest_rx;
@@ -111,7 +117,7 @@ impl MarketDataStream {
     ) -> Result<(), BinanceFuturesError> {
         let Ok((bids, asks)) = parse_depth(bids, asks) else {
             error!(%symbol, "failed to parse Binance depth levels");
-            return Ok(());
+            return Err(BinanceFuturesError::InvalidRequest);
         };
 
         self.publish(PublishEvent::BatchStart)?;
@@ -166,6 +172,9 @@ impl MarketDataStream {
         let symbol = data.symbol.clone();
 
         if let Some(previous_u) = self.prev_u.get(&symbol).copied() {
+            if data.last_update_id <= previous_u {
+                return Ok(());
+            }
             // Binance requires pu == previous u after the initial snapshot handoff.
             if data.prev_update_id != previous_u {
                 warn!(
@@ -181,6 +190,7 @@ impl MarketDataStream {
                 return Ok(());
             }
             self.emit_depth_update(&data)?;
+            self.depth_progress.insert(symbol.clone(), Instant::now());
             self.prev_u.insert(symbol, data.last_update_id);
             return Ok(());
         }
@@ -267,6 +277,7 @@ impl MarketDataStream {
         }
 
         if let Some(last_u) = previous_u {
+            self.depth_progress.insert(symbol.clone(), Instant::now());
             self.prev_u.insert(symbol, last_u);
         }
         Ok(())
@@ -310,11 +321,23 @@ impl MarketDataStream {
         Ok(())
     }
 
+    fn check_depth_progress(&self, now: Instant) -> Result<(), BinanceFuturesError> {
+        for (symbol, last) in &self.depth_progress {
+            if now.duration_since(*last) >= DEPTH_PROGRESS_TIMEOUT {
+                warn!(%symbol, age_ms = now.duration_since(*last).as_millis() as u64,
+                    synchronized = self.prev_u.contains_key(symbol),
+                    "market depth progress timeout; reconnecting and rebuilding books");
+                return Err(BinanceFuturesError::ConnectionInterrupted);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn connect(&mut self, url: &str) -> Result<(), BinanceFuturesError> {
         let (ws_stream, _) = connect_websocket(url).await?;
         let (mut write, mut read) = ws_stream.split();
         self.reset_connection_state();
-        let mut activity_checker = time::interval(Duration::from_secs(10));
+        let mut activity_checker = time::interval(Duration::from_secs(1));
         let mut last_activity = Instant::now();
         let mut subscribed = HashSet::new();
 
@@ -322,9 +345,11 @@ impl MarketDataStream {
         for symbol in registered_symbols {
             if subscribed.insert(symbol.clone()) {
                 let id = generate_random_id(16);
-                write
-                    .send(Message::Text(subscription_request(&symbol, &id).into()))
-                    .await?;
+                self.depth_progress.insert(symbol.clone(), Instant::now());
+                websocket_io(
+                    write.send(Message::Text(subscription_request(&symbol, &id).into())),
+                )
+                .await?;
             }
         }
 
@@ -334,6 +359,7 @@ impl MarketDataStream {
                     self.process_snapshot(symbol, result?)?;
                 }
                 _ = activity_checker.tick() => {
+                    self.check_depth_progress(Instant::now())?;
                     if last_activity.elapsed() > Duration::from_secs(300) {
                         warn!("market data stream activity timeout");
                         return Err(BinanceFuturesError::ConnectionInterrupted);
@@ -343,12 +369,17 @@ impl MarketDataStream {
                     Ok(symbol) => {
                         if subscribed.insert(symbol.clone()) {
                             let id = generate_random_id(16);
-                            write.send(Message::Text(subscription_request(&symbol, &id).into())).await?;
+                            self.depth_progress.insert(symbol.clone(), Instant::now());
+                            websocket_io(write.send(Message::Text(
+                                subscription_request(&symbol, &id).into(),
+                            )))
+                            .await?;
                         }
                     }
                     Err(RecvError::Closed) => return Ok(()),
                     Err(RecvError::Lagged(num)) => {
-                        error!(num, "Binance subscription requests were missed");
+                        error!(num, "Binance subscription requests were missed; replaying registry on reconnect");
+                        return Err(BinanceFuturesError::ConnectionInterrupted);
                     }
                 },
                 message = read.next() => match message {
@@ -362,7 +393,7 @@ impl MarketDataStream {
                     }
                     Some(Ok(Message::Ping(data))) => {
                         last_activity = Instant::now();
-                        write.send(Message::Pong(data)).await?;
+                        websocket_io(write.send(Message::Pong(data))).await?;
                     }
                     Some(Ok(Message::Pong(_)))
                     | Some(Ok(Message::Binary(_)))
@@ -409,6 +440,82 @@ mod tests {
 
     use super::{MAX_PENDING_DEPTH_MESSAGES, MarketDataStream};
     use crate::exchange::binance_usdm::{SharedSymbolSet, rest::BinanceFuturesClient};
+
+    #[tokio::test]
+    async fn depth_progress_is_per_symbol_and_requires_published_depth() {
+        use std::time::Instant;
+
+        use crate::exchange::binance_usdm::protocol::stream;
+
+        let client = BinanceFuturesClient::new("http://127.0.0.1:9", "", "").unwrap();
+        let (event_tx, _event_rx) = unbounded_channel();
+        let (symbol_tx, _) = broadcast::channel(4);
+        let mut market =
+            MarketDataStream::new(client, event_tx, Default::default(), symbol_tx.subscribe());
+        let now = Instant::now();
+        market.depth_progress.insert("btcusdt".into(), now);
+        market.depth_progress.insert("ethusdt".into(), now);
+        assert!(
+            market
+                .check_depth_progress(
+                    now + super::DEPTH_PROGRESS_TIMEOUT - Duration::from_millis(1),
+                )
+                .is_ok()
+        );
+        market
+            .depth_progress
+            .insert("ethusdt".into(), now + Duration::from_secs(29));
+        assert!(
+            market
+                .check_depth_progress(now + super::DEPTH_PROGRESS_TIMEOUT)
+                .is_err()
+        );
+
+        // A parsed but unsynchronized diff must not extend the progress deadline.
+        market
+            .handle_depth_update(stream::Depth {
+                symbol: "btcusdt".into(),
+                transaction_time: 1,
+                event_time: 1,
+                first_update_id: 2,
+                last_update_id: 2,
+                prev_update_id: 1,
+                bids: vec![],
+                asks: vec![],
+            })
+            .unwrap();
+        assert_eq!(market.depth_progress["btcusdt"], now);
+        market.prev_u.insert("btcusdt".into(), 1);
+        market
+            .handle_depth_update(stream::Depth {
+                symbol: "btcusdt".into(),
+                transaction_time: 2,
+                event_time: 2,
+                first_update_id: 2,
+                last_update_id: 2,
+                prev_update_id: 1,
+                bids: vec![("100".into(), "1".into())],
+                asks: vec![],
+            })
+            .unwrap();
+        assert!(market.depth_progress["btcusdt"] > now);
+        let published_at = market.depth_progress["btcusdt"];
+        market
+            .handle_depth_update(stream::Depth {
+                symbol: "btcusdt".into(),
+                transaction_time: 2,
+                event_time: 2,
+                first_update_id: 2,
+                last_update_id: 2,
+                prev_update_id: 1,
+                bids: vec![],
+                asks: vec![],
+            })
+            .unwrap();
+        assert_eq!(market.depth_progress["btcusdt"], published_at);
+        market.reset_connection_state();
+        assert!(market.depth_progress.is_empty());
+    }
 
     #[test]
     fn closed_event_sink_does_not_panic() {
