@@ -1,11 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-  "hftbacktest",
-  "hftbacktest-derive",
-  "py-hftbacktest",
-  "collector"
-, "connector"]
+  "engine",
+  "app",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.91.1"
 
 [profile.dev]
 opt-level = 0

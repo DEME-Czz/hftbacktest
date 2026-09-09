@@ -1,0 +1,24 @@
+# Live
+
+Live 当前只支持 Binance USD-M Futures，Market WS、User WS、Runtime 与 Strategy 都在同一个 Rust 进程内运行。
+
+`LiveStrategyRuntime` 在完整且连续的 L2 depth batch 后调用共享 Strategy API。默认 CLI 是 dry-run，只记录通过 RiskGate 的决策；显式增加 `--execute` 后，`LiveService` 才启动账户流并允许 Submit/Cancel。
+
+执行门禁：
+
+- API Key/Secret 必须成对配置，远端地址必须使用 WSS/HTTPS。
+- 每个 symbol 收到初始 Position 之前禁止下单。
+- 私有账户流断开会清空全部 symbol 的就绪状态；重新对账前继续 fail closed。
+- 私有流 listen-key 保活失败会立即重建连接与 listen key，并重新执行账户对账；不会仅记录错误后继续假运行。
+- Market WS 的连接、代理 CONNECT、TLS 握手和写操作均有 10 秒上限，避免单个异步操作永久挂起。
+- 行情健康以每个 symbol 成功发布的连续 L2 depth 为准；Ping/Pong 或订阅响应不能冒充有效行情。任一 symbol 30 秒无深度进展会重连并重建订单簿。
+- 每 30 秒输出一条 `live runtime health`，明确记录行情、账户、kill switch、容量限制及活动订单状态。
+- Binance 返回 `-2027` 后会锁定被拒方向并撤销该方向挂单。少量有利成交不会解除锁定；只有仓位真实变化到该方向不再增加现有库存，且同方向活动订单清零后才恢复，避免“拒绝—微小仓位变化—重试”的请求循环。
+- 风控计算当前仓位、同方向活动订单暴露、单笔数量/名义价值和活动订单数。
+- Ctrl+C 只撤销本进程已跟踪的活动订单，并等待确认；两秒超时会明确告警。
+
+当前 Live Executor 只实现 Submit/Cancel。Engine 保留 `StrategyCommand::Modify` 语义供回测使用，但 Live 收到 Modify 会拒绝并记录告警。启动时不会调用交易所级 `cancel_all`，避免误撤手工订单或其他策略订单。
+
+## 当前生产边界
+
+本轮验收覆盖 Demo/Testnet，不代表 Mainnet 生产就绪。进程重启后尚未通过 REST 恢复同一 `order_prefix` 的存量挂单；REST 下单结果不确定时也尚未实现按 `clientOrderId` 主动查询确认。进入 `--execute` 前必须人工确认账户没有上次进程遗留的策略订单，Mainnet 前应补齐订单恢复、stale-market 自动撤单与外部 kill switch。
