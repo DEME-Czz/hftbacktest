@@ -52,6 +52,7 @@ pub enum PublishEvent {
     SubmissionCapacityRejected {
         symbol: String,
         side: Side,
+        qty: f64,
         code: i64,
     },
     /// The venue may have accepted a submit whose response could not be confirmed. Execution for

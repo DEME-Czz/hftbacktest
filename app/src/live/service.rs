@@ -115,42 +115,64 @@ impl AccountReadiness {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CapacityBlock {
+    rejected_position: f64,
+    rejected_qty: f64,
+}
+
 /// Directional venue-capacity guard learned from deterministic Binance rejections such as -2027.
 ///
-/// A rejected side is blocked from new submissions, but cancellations and the opposite side remain
-/// available so the market maker can reduce inventory. A Buy block is released only after position
-/// decreases; a Sell block is released only after position increases. Those moves create capacity
-/// in the corresponding direction without guessing an exchange leverage bracket locally.
+/// The rejected side remains blocked while it would increase the current inventory direction. A
+/// small favorable fill is not sufficient evidence that the next order fits the venue's leverage
+/// bracket. Recovery therefore requires a real position change, neutral/risk-reducing inventory,
+/// and no remaining orders on the rejected side.
 #[derive(Default)]
 struct SubmissionBlocks {
-    buy: HashSet<String>,
-    sell: HashSet<String>,
+    buy: HashMap<String, CapacityBlock>,
+    sell: HashMap<String, CapacityBlock>,
 }
 
 impl SubmissionBlocks {
-    fn block(&mut self, symbol: &str, side: Side) -> bool {
+    fn block(&mut self, symbol: &str, side: Side, position: f64, qty: f64) -> bool {
+        let block = CapacityBlock {
+            rejected_position: position,
+            rejected_qty: qty,
+        };
         match side {
-            Side::Buy => self.buy.insert(symbol.to_string()),
-            Side::Sell => self.sell.insert(symbol.to_string()),
+            Side::Buy => self.buy.insert(symbol.to_string(), block).is_none(),
+            Side::Sell => self.sell.insert(symbol.to_string(), block).is_none(),
             Side::None | Side::Unsupported => false,
         }
     }
 
     fn is_blocked(&self, symbol: &str, side: Side) -> bool {
         match side {
-            Side::Buy => self.buy.contains(symbol),
-            Side::Sell => self.sell.contains(symbol),
+            Side::Buy => self.buy.contains_key(symbol),
+            Side::Sell => self.sell.contains_key(symbol),
             Side::None | Side::Unsupported => false,
         }
     }
 
-    fn release_for_position_change(&mut self, symbol: &str, previous: f64, current: f64) -> bool {
-        let mut released = false;
-        if current < previous {
-            released |= self.buy.remove(symbol);
+    fn release_recovered(
+        &mut self,
+        symbol: &str,
+        position: f64,
+        buy_exposure: f64,
+        sell_exposure: f64,
+    ) -> Vec<(Side, CapacityBlock)> {
+        let mut released = Vec::with_capacity(2);
+        if self.buy.get(symbol).is_some_and(|block| {
+            position != block.rejected_position && position <= 0.0 && buy_exposure <= 0.0
+        }) && let Some(block) = self.buy.remove(symbol)
+        {
+            released.push((Side::Buy, block));
         }
-        if current > previous {
-            released |= self.sell.remove(symbol);
+        if self.sell.get(symbol).is_some_and(|block| {
+            position != block.rejected_position && position >= 0.0 && sell_exposure <= 0.0
+        }) && let Some(block) = self.sell.remove(symbol)
+        {
+            released.push((Side::Sell, block));
         }
         released
     }
@@ -333,31 +355,38 @@ impl<C: LiveConnector> LiveService<C> {
                         if let Some(symbol) = live_symbol(&live)
                             && let Some(runtime) = self.runtimes.get_mut(symbol)
                         {
-                            let previous_position = runtime.position();
                             let applied = runtime.apply(&live);
+                            let mut account_state_changed = false;
                             match &live {
                                 LiveEvent::Position { exch_ts, .. } => {
                                     account_readiness.observe_position(symbol, *exch_ts, applied);
-                                    if applied {
-                                        if submission_blocks.release_for_position_change(
-                                            symbol,
-                                            previous_position,
-                                            runtime.position(),
-                                        ) {
-                                            info!(
-                                                %symbol,
-                                                position = runtime.position(),
-                                                "venue capacity side block released after position created new headroom"
-                                            );
-                                        }
-                                        account_quote_symbol = Some(symbol.to_string());
-                                    }
+                                    account_state_changed = applied;
                                 }
                                 LiveEvent::Order { order, .. } if applied => {
                                     account_readiness.observe_order(symbol, order);
-                                    account_quote_symbol = Some(symbol.to_string());
+                                    account_state_changed = true;
                                 }
                                 _ => {}
+                            }
+                            if account_state_changed {
+                                let position = runtime.position();
+                                let released = submission_blocks.release_recovered(
+                                    symbol,
+                                    position,
+                                    runtime.active_order_exposure(Side::Buy),
+                                    runtime.active_order_exposure(Side::Sell),
+                                );
+                                for (side, block) in released {
+                                    info!(
+                                        %symbol,
+                                        ?side,
+                                        position,
+                                        rejected_position = block.rejected_position,
+                                        rejected_qty = block.rejected_qty,
+                                        "venue capacity side block released after inventory became risk-reducing"
+                                    );
+                                }
+                                account_quote_symbol = Some(symbol.to_string());
                             }
                         }
 
@@ -471,13 +500,19 @@ impl<C: LiveConnector> LiveService<C> {
                             &mut cancellation_requests,
                         );
                     }
-                    Some(PublishEvent::SubmissionCapacityRejected { symbol, side, code }) => {
-                        if submission_blocks.block(&symbol, side) {
+                    Some(PublishEvent::SubmissionCapacityRejected { symbol, side, qty, code }) => {
+                        let position = self
+                            .runtimes
+                            .get(&symbol)
+                            .map_or(0.0, LiveStrategyRuntime::position);
+                        if submission_blocks.block(&symbol, side, position, qty) {
                             warn!(
                                 %symbol,
                                 ?side,
+                                qty,
+                                position,
                                 code,
-                                "Binance position capacity rejected submit; blocking this quote side until position creates headroom"
+                                "Binance position capacity rejected submit; blocking this quote side until inventory becomes risk-reducing"
                             );
                             // Existing orders on the same side also consume the capacity that just
                             // caused the venue rejection. Cancel them, but keep the opposite side
@@ -696,21 +731,45 @@ mod tests {
     }
 
     #[test]
-    fn capacity_block_is_directional_and_releases_only_after_headroom_is_created() {
+    fn capacity_block_requires_neutral_inventory_and_cleared_same_side_orders() {
         let mut blocks = SubmissionBlocks::default();
 
-        assert!(blocks.block("btcusdt", Side::Buy));
+        assert!(blocks.block("btcusdt", Side::Buy, 1.0, 0.1));
         assert!(blocks.is_blocked("btcusdt", Side::Buy));
         assert!(!blocks.is_blocked("btcusdt", Side::Sell));
-        assert!(!blocks.release_for_position_change("btcusdt", 1.0, 1.1));
+        assert!(
+            blocks
+                .release_recovered("btcusdt", 0.5, 0.0, 0.0)
+                .is_empty()
+        );
         assert!(blocks.is_blocked("btcusdt", Side::Buy));
-        assert!(blocks.release_for_position_change("btcusdt", 1.1, 1.0));
+        assert!(
+            blocks
+                .release_recovered("btcusdt", 0.0, 0.1, 0.0)
+                .is_empty()
+        );
+        assert_eq!(
+            blocks.release_recovered("btcusdt", 0.0, 0.0, 0.0)[0].0,
+            Side::Buy
+        );
         assert!(!blocks.is_blocked("btcusdt", Side::Buy));
 
-        assert!(blocks.block("btcusdt", Side::Sell));
-        assert!(!blocks.release_for_position_change("btcusdt", -1.0, -1.1));
+        assert!(blocks.block("btcusdt", Side::Sell, -1.0, 0.1));
+        assert!(
+            blocks
+                .release_recovered("btcusdt", -0.5, 0.0, 0.0)
+                .is_empty()
+        );
         assert!(blocks.is_blocked("btcusdt", Side::Sell));
-        assert!(blocks.release_for_position_change("btcusdt", -1.1, -1.0));
+        assert!(
+            blocks
+                .release_recovered("btcusdt", 0.0, 0.0, 0.1)
+                .is_empty()
+        );
+        assert_eq!(
+            blocks.release_recovered("btcusdt", 0.0, 0.0, 0.0)[0].0,
+            Side::Sell
+        );
         assert!(!blocks.is_blocked("btcusdt", Side::Sell));
     }
 }

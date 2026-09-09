@@ -397,6 +397,7 @@ impl ExecutionVenue for BinanceFutures {
                             let _ = tx.send(PublishEvent::SubmissionCapacityRejected {
                                 symbol: symbol.clone(),
                                 side: order.side,
+                                qty: order.qty,
                                 code,
                             });
                         }
@@ -706,6 +707,7 @@ mod tests {
             PublishEvent::SubmissionCapacityRejected {
                 ref symbol,
                 side: Side::Buy,
+                qty: 1.0,
                 code: -2027,
             } if symbol == "btcusdt"
         ));
